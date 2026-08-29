@@ -47,17 +47,57 @@ can be rotated into landscape mode in software, despite being portrait by defaul
 
 # Software
 
-What will actually run on the mini-PC
+Potential Software
 
-Software	
-Linux/Windows -	operating system
-llama.cpp / Ollama	- runs BMO's local language model
-Whisper-style STT	- understands your speech
-Wake-word system	- listens for “BMO”
-BMO Python/service - code	agent logic
-SQLite/vector DB	- memory
-TTS engine	- generates BMO's voice
-UI	- animated BMO face
-Tool layer	- files, email, search etc.
-Security layer	- permissions/authentication
-Network services	- communication with your main PC
+Whisper - Text to speech
+
+Qwen3.5 - Main LLm
+
+Vison Model - Qwen Vl Family
+
+
+## Bmo Inspired
+Can connect to my Pc or wifi to access email, file, projects
+Voice operated
+memory and security
+
+
+
+Functions:
+Localised AI (can be used offline) as well as online
+
+Bmo robot friend with a voice I can speak to
+
+Network connection and access to help with tasks Eg. email, searching, file search, saving, exporting
+
+Memory of conversation, Ability to change settings and uses.
+
+Can connect to my pc either physically or through network to access and interact.
+
+Secure Use and Cybersecure passwords or any private info
+
+Cheap on electricity
+
+
+
+Tasks / Materials:
+
+BMO Case, Buy one online or fashion a premade toy into one
+Put a screen inside it, have the minipc stored inside BMO safely and ventiltated
+Animated and voice for screen and voice control
+Mini PC
+AI Local Agent
+Tools
+Create Agent and Bios setup
+Testing
+Setup
+Etc...
+
+
+This is the rough idea for now we will expand but this is the core Idea. Just as BMO is a helpful robot in Adventire time i will have a localise bmo agent to talk to me and help me with stuff
+This will be a project i can work on and show future employers we will be through and do this properly , safely and in many steps making sure we can do it properly and reliable
+
+
+
+
+
