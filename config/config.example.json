@@ -1,0 +1,9 @@
+{
+    "assistant_name": "BMO",
+    "llm": {
+        "backend": "local",
+        "model": "qwen3.5",
+        "host": "127.0.0.1",
+        "port": 8080
+    }
+}
