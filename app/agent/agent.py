@@ -1,5 +1,7 @@
 from app.agent.personality import BMO_NAME, GREETING, STATUS_RESPONSE
 from app.tools.tool_registry import run_tool
+from app.memory.memory import save_memory, get_memories
+
 
 class BMOAgent:
     def start(self):
@@ -20,5 +22,18 @@ class BMOAgent:
         if "what time" in message or "current time" in message:
             time = run_tool("get_current_time")
             return f"It is {time}."
+
+        if message.startswith("remember "):
+            remembered_text = message.removeprefix("remember ").strip()
+            save_memory(remembered_text)
+            return "I'll remember that."
+
+        if message == "what do you remember":
+            memories = get_memories()
+
+            if not memories:
+                return "I don't remember anything yet."
+
+            return "I remember: " + ", ".join(memories)
 
         return f"You said: {message}"
