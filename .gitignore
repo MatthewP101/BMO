@@ -1,0 +1,21 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# environment variables / secrets
+.env
+
+# BMO local data
+data/*.db
+
+# downloaded AI models
+models/*.gguf
+models/*.bin
+models/*.safetensors
+
+# editor / operating system files
+.vscode/
+.DS_Store
+Thumbs.db
