@@ -6,11 +6,16 @@ def start_bmo():
 
     bmo = BMOAgent()
     bmo.start()
-    message = input("You: ")
-    response = bmo.respond(message)
 
-    print(f"BMO: {response}")
-    print("MY LOYAL SQUIREEEE")
+    while True:
+        message = input("You: ")
+
+        if message.lower() == "exit":
+            print("BMO: Goodbye, my loyal squire.")
+            break
+
+        response = bmo.respond(message)
+        print(f"BMO: {response}")
 
 
 if __name__ == "__main__":
