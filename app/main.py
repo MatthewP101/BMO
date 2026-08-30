@@ -1,7 +1,9 @@
 from app.agent.agent import BMOAgent
+from app.memory.memory import initialise_memory
 
 
 def start_bmo():
+    initialise_memory()
     print("BMO is starting...")
 
     bmo = BMOAgent()
