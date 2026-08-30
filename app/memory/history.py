@@ -52,9 +52,9 @@ def get_recent_history(limit=HISTORY_LIMIT):
     )
 
     rows = cursor.fetchall()
+
     connection.close()
 
-    # database returned newest first, so reverse it
     rows.reverse()
 
     return rows

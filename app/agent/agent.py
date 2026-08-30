@@ -1,12 +1,13 @@
 from app.agent.personality import BMO_NAME, GREETING, STATUS_RESPONSE
 from app.tools.tool_registry import run_tool
 from app.memory.memory import save_memory, get_memories
+from app.memory.history import save_message
 from app.llm.llm_client import LLMClient
 
 
 class BMOAgent:
     def __init__(self):
-            self.llm = LLMClient()
+        self.llm = LLMClient()
 
     def start(self):
         print("BMO agent online.")
@@ -14,30 +15,37 @@ class BMOAgent:
     def respond(self, message):
         message = message.lower().strip()
 
+        save_message("user", message)
+
         if message in ["hello", "hi", "hey"]:
-            return GREETING
+            response = GREETING
 
-        if "your name" in message:
-            return f"I am {BMO_NAME}!"
+        elif "your name" in message:
+            response = f"I am {BMO_NAME}!"
 
-        if "how are you" in message:
-            return STATUS_RESPONSE
+        elif "how are you" in message:
+            response = STATUS_RESPONSE
 
-        if "what time" in message or "current time" in message:
+        elif "what time" in message or "current time" in message:
             time = run_tool("get_current_time")
-            return f"It is {time}."
+            response = f"It is {time}."
 
-        if message.startswith("remember "):
+        elif message.startswith("remember "):
             remembered_text = message.removeprefix("remember ").strip()
             save_memory(remembered_text)
-            return "I'll remember that."
+            response = "I'll remember that."
 
-        if message == "what do you remember":
+        elif message == "what do you remember":
             memories = get_memories()
 
             if not memories:
-                return "I don't remember anything yet."
+                response = "I don't remember anything yet."
+            else:
+                response = "I remember: " + ", ".join(memories)
 
-            return "I remember: " + ", ".join(memories)
+        else:
+            response = self.llm.generate(message)
 
-        return self.llm.generate(message)
+        save_message("assistant", response)
+
+        return response
