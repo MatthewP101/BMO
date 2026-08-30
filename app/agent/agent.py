@@ -1,4 +1,5 @@
 from app.agent.personality import BMO_NAME, GREETING, STATUS_RESPONSE
+from app.tools.tool_registry import run_tool
 
 class BMOAgent:
     def start(self):
@@ -15,5 +16,9 @@ class BMOAgent:
 
         if "how are you" in message:
             return STATUS_RESPONSE
+
+        if "what time" in message or "current time" in message:
+            time = run_tool("get_current_time")
+            return f"It is {time}."
 
         return f"You said: {message}"
