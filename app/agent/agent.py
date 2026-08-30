@@ -1,9 +1,13 @@
 from app.agent.personality import BMO_NAME, GREETING, STATUS_RESPONSE
 from app.tools.tool_registry import run_tool
 from app.memory.memory import save_memory, get_memories
+from app.llm.llm_client import LLMClient
 
 
 class BMOAgent:
+    def __init__(self):
+            self.llm = LLMClient()
+
     def start(self):
         print("BMO agent online.")
 
@@ -36,4 +40,4 @@ class BMOAgent:
 
             return "I remember: " + ", ".join(memories)
 
-        return f"You said: {message}"
+        return self.llm.generate(message)
