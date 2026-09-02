@@ -31,6 +31,17 @@ class SentenceTests(unittest.TestCase):
                 self.assertIn('Try it now.', speech)
                 self.assertEqual(speech.count('The code is on screen.'), 1)
 
+    def test_long_outer_fence_keeps_nested_code_out_of_live_and_replayed_speech(self):
+        from app.voice.text_to_speech import spoken_text
+        for marker in ('`','~'):
+            text=f'First sentence.\n{marker*4}markdown\n{marker*3}py\nSECRET()\n{marker*3}\nSTILL_SECRET\n{marker*4}\nWe are back.'
+            for stride in range(1,10):
+                output=self.speech(text,stride)
+                self.assertNotIn('SECRET',output)
+                self.assertIn('We are back.',output)
+            self.assertNotIn('SECRET',spoken_text(text))
+            self.assertIn('We are back.',spoken_text(text))
+
     def test_unclosed_code_is_never_spoken(self):
         self.assertNotIn('SECRET', self.speech('One thing. ```py\nSECRET'))
 

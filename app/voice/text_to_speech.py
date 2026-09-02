@@ -4,14 +4,33 @@ import subprocess
 import tempfile
 import wave
 from pathlib import Path
+from threading import RLock, Lock
+from collections import OrderedDict
+from app.voice.audio_effects import transform_chunks
 
 from app.config import ROOT
 
 
+def strip_fenced_code(text):
+    parts, start, fence, has_code = [], 0, None, False
+    for match in re.finditer(r'`{3,}|~{3,}', text):
+        marker = match.group()
+        if fence is None:
+            parts.append(text[start:match.start()])
+            fence = marker
+            has_code = True
+        elif marker[0] == fence[0] and len(marker) >= len(fence):
+            parts.append(' ')
+            start = match.end()
+            fence = None
+    if fence is None:
+        parts.append(text[start:])
+    return ''.join(parts), has_code
+
+
 def spoken_text(text, limit=900):
     # keep executable material on screen instead of reading punctuation aloud
-    has_code = '```' in text
-    text = re.sub(r'```[\s\S]*?(?:```|$)', ' ', text)
+    text, has_code = strip_fenced_code(text)
     text = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text)
     text = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', text)
     text = re.sub(r'https?://\S+', 'the link on screen', text)
@@ -45,8 +64,15 @@ class TextToSpeech:
         self.model = None
         self.voice_state = None
         self.voice_key = None
+        self._lock = RLock()
+        self._generation_lock = Lock()
+        self._cache = OrderedDict()
 
     def load(self):
+        with self._lock:
+            self._load()
+
+    def _load(self):
         if self.settings.get('backend', 'pocket') == 'espeak':
             return
         if self.model is None:
@@ -66,7 +92,7 @@ class TextToSpeech:
         if reference:
             path = Path(source)
             if not path.is_file():
-                raise RuntimeError('Reference voice file is missing. Choose another WAV in Settings or clear the reference.')
+                raise RuntimeError('Reference voice file is missing. Choose another saved voice in Settings or prepare it again with python -m app.voice --reference.')
             if path.suffix.lower() != '.safetensors' and not self.model.has_voice_cloning:
                 raise RuntimeError('Reference voices need access to kyutai/pocket-tts on Hugging Face and hf auth login. '
                                    'See docs/FAST_VOICE.md. Clear the reference to use a bundled voice.')
@@ -78,6 +104,18 @@ class TextToSpeech:
             self.voice_key = key
 
     def audio_chunks(self, text, mode='companion'):
+        pace = min(1.1,max(.9,float(self.settings.get('pace',1.))))
+        pitch = min(1.5,max(-1.5,float(self.settings.get('pitch_shift',0.))))
+        # Own serialization here: the tuning producer resumes the source on a
+        # worker, so the source must never hold a thread-owned lock across yield.
+        with self._generation_lock:
+            source = self._generate_chunks(text,mode)
+            if abs(pace-1.)<.0001 and abs(pitch)<.0001:
+                yield from source
+            else:
+                yield from transform_chunks(source,pace,pitch)
+
+    def _generate_chunks(self, text, mode='companion'):
         import numpy as np
         backend = self.settings.get('backend', 'pocket')
         volume = min(1.0, max(0.0, float(self.settings.get('volume', 0.85))))
@@ -88,17 +126,33 @@ class TextToSpeech:
         if backend != 'pocket':
             raise RuntimeError(f'Unknown voice backend: {backend}')
         self.load()
+        cache_key = (text,self.voice_key,volume)
+        if cache_key in self._cache:
+            samples,rate = self._cache[cache_key]
+            self._cache.move_to_end(cache_key)
+            yield samples,rate
+            return
+        saved=[]
+        saved_samples=0
         # The API copies the cached state; speech must not accumulate a new history.
         chunks = self.model.generate_audio_stream(self.voice_state, text, copy_state=True)
         try:
             for chunk in chunks:
                 samples = chunk.detach().cpu().numpy().astype(np.float32, copy=False).reshape(-1)
-                yield np.clip(samples * volume, -1, 1), self.model.sample_rate
+                samples = np.clip(samples * volume, -1, 1)
+                if len(text)<=240 and saved_samples<=self.model.sample_rate*20:
+                    saved_samples+=len(samples)
+                    saved.append(samples.copy())
+                yield samples, self.model.sample_rate
         finally:
             # Pocket's decoder runs in a worker. Drain before reusing the model;
             # otherwise Stop followed by Talk could overlap non-thread-safe calls.
             for _ in chunks:
                 pass
+        if saved and saved_samples<=self.model.sample_rate*20:
+            self._cache[cache_key] = (np.concatenate(saved),self.model.sample_rate)
+            while len(self._cache)>6:
+                self._cache.popitem(last=False)
 
     def synthesise(self, text, mode='companion'):
         """File/benchmark API. Live playback uses audio_chunks instead."""

@@ -29,6 +29,11 @@ def load_config():
         # Migrate in memory; retain the user's device choices and original file.
         if settings['voice'].get('backend') == 'kokoro':
             settings['voice']['backend'] = 'pocket'
+        voice = settings['voice']
+        if not isinstance(voice.get('profiles', {}), dict):
+            raise ValueError('voice.profiles must be an object')
+        if voice.get('reference_voice'):
+            voice.setdefault('profiles', {}).setdefault('Original BMO', voice['reference_voice'])
         return settings
     except (OSError, ValueError) as exc:
         raise RuntimeError(f'Cannot read BMO settings: {exc}') from exc

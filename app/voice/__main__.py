@@ -15,7 +15,7 @@ VOICES = ('azelma', 'cosette', 'eponine', 'alba', 'fantine')
 TEST_TEXT = 'Oh, hello, Matthew. What are we doing today? I have a very small adventure in mind.'
 
 
-def use_reference(path, settings):
+def use_reference(path, settings, name="BMO reference"):
     """Export once; subsequent startups load the small cached voice state."""
     import hashlib
     import numpy as np
@@ -50,7 +50,20 @@ def use_reference(path, settings):
         temporary.replace(target)
     finally:
         temporary.unlink(missing_ok=True)
-    changes = dict(backend='pocket', reference_voice=str(target.relative_to(ROOT)))
+    profiles = dict(settings.get('profiles', {}))
+    if settings.get('reference_voice'):
+        profiles.setdefault('Original BMO',settings['reference_voice'])
+    label = name.strip()[:60] or 'BMO reference'
+    new_path = str(target.relative_to(ROOT))
+    if label in profiles and profiles[label] != new_path:
+        previous = label + ' (previous)'
+        number = 2
+        while previous in profiles:
+            previous = f'{label} (previous {number})'
+            number += 1
+        profiles[previous] = profiles[label]
+    profiles[label] = new_path
+    changes = dict(backend='pocket', reference_voice=str(target.relative_to(ROOT)),profiles=profiles)
     save_preferences('voice', changes)
     settings.update(changes)
     print('Reference voice prepared and selected. Restart BMO to use it.')
@@ -83,6 +96,9 @@ def main():
     parser.add_argument('--test-voice', action='store_true')
     parser.add_argument('--voice', choices=VOICES, help='select and save a bundled voice; clears a custom reference')
     parser.add_argument('--reference', type=Path, help='prepare and select a clean 6–20 second PCM WAV')
+    parser.add_argument('--name', default='BMO reference', help='name for a prepared reference in Settings')
+    parser.add_argument('--pace', type=float, help='audition pace, 0.9 to 1.1 (not saved)')
+    parser.add_argument('--pitch', type=float, help='audition pitch in semitones, -1.5 to 1.5 (not saved)')
     parser.add_argument('--clear-reference', action='store_true')
     parser.add_argument('--output', type=Path, help='save a voice test to WAV instead of playing it')
     parser.add_argument('--text', default=TEST_TEXT)
@@ -90,13 +106,15 @@ def main():
     settings = load_config()['voice']
     try:
         if args.voice or args.clear_reference:
-            changes = dict(backend='pocket', reference_voice='')
+            changes = dict(backend='pocket', reference_voice='',profiles=dict(settings.get('profiles',{})))
             if args.voice:
                 changes['pocket_voice'] = args.voice
             save_preferences('voice', changes)
             settings.update(changes)
         if args.reference:
-            use_reference(args.reference, settings)
+            use_reference(args.reference, settings, args.name)
+        if args.pace is not None: settings['pace']=args.pace
+        if args.pitch is not None: settings['pitch_shift']=args.pitch
         speaker = TextToSpeech(settings)
         if args.download_voice:
             print('Loading local voice (the first download can take a few minutes)...', flush=True)

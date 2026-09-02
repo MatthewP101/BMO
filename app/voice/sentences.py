@@ -16,17 +16,25 @@ class SpeechSentences:
 
     def feed(self, text, final=False):
         self.pending += text
-        # Retain two characters so a fence split across tokens is recognised.
+        # Retain incomplete marker runs across token boundaries. A four-tick
+        # outer fence must stay closed around a quoted three-tick code example.
         while len(self.pending) >= 3 or (final and self.pending):
-            marker = self.pending[:3]
-            if marker in ('```', '~~~') and (self.fence is None or marker == self.fence):
-                self.fence = None if self.fence else marker
-                self.has_code = True
-                self.pending = self.pending[3:]
-                self.prose += ' '
-                continue
+            first = self.pending[0]
+            if first in ('`', '~'):
+                count = len(self.pending) - len(self.pending.lstrip(first))
+                if count == len(self.pending) and not final:
+                    break
+                if count >= 3:
+                    if self.fence is None:
+                        self.fence = (first, count)
+                        self.has_code = True
+                    elif first == self.fence[0] and count >= self.fence[1]:
+                        self.fence = None
+                    self.pending = self.pending[count:]
+                    self.prose += ' '
+                    continue
             if self.fence is None:
-                self.prose += self.pending[0]
+                self.prose += first
             self.pending = self.pending[1:]
         out = []
         while self.prose:

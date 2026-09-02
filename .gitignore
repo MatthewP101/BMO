@@ -31,3 +31,6 @@ config/config.json.tmp
 # Local reference voice embeddings and voice auditions
 models/pocket/
 data/voice-tests/
+
+# SQLite journals and migration backups
+data/*.db-*

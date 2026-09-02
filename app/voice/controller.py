@@ -2,10 +2,10 @@ from queue import Queue, Empty, Full
 from threading import Event, Lock, Thread
 from time import monotonic
 
-from app.agent.character import choose_mode
+from app.agent.character import choose_mode, reaction_for, gesture_for
 from app.llm.llm_client import TurnCancelled
 from app.voice.speech_to_text import SpeechToText, record_audio
-from app.voice.text_to_speech import TextToSpeech
+from app.voice.text_to_speech import TextToSpeech, spoken_text
 from app.voice.sentences import SpeechSentences
 
 
@@ -21,10 +21,51 @@ class VoiceController:
         self.cancelled, self.closed = Event(), Event()
         self.lock = Lock()
         self.busy = False
+        self.warming = Event()
 
     def emit(self, kind, value):
         if not self.closed.is_set():
             self.events.put((kind, value))
+
+    def warmup(self, voice=True):
+        if self.warming.is_set() or self.closed.is_set():
+            return
+        self.warming.set()
+        def voice_work():
+            self.emit('warmup','Warming voice')
+            try:
+                if voice:self.speaker.load()
+            except Exception as exc:
+                self.emit('warmup_error',str(exc))
+            finally:
+                self.warming.clear()
+                self.emit('warmup','Ready')
+        def model_work():
+            try:self.agent.llm.warmup()
+            except Exception:pass  # the normal turn reports actionable Ollama errors
+        Thread(target=voice_work,daemon=True).start()
+        Thread(target=model_work,daemon=True).start()
+
+    def say(self, text, mode='companion'):
+        text=spoken_text(text,int(self.settings.get('max_spoken_chars',600)))
+        if not text:return False
+        with self.lock:
+            if self.busy or self.closed.is_set():return False
+            self.busy=True
+            self.speech_stop.clear();self.cancelled.clear()
+        def playback():
+            try:
+                self.emit('state','Preparing voice')
+                self.speaker.speak(text,self.speech_stop,lambda:self.emit('state','Speaking'),
+                                   lambda:None,lambda shape:self.emit('audio',shape),mode)
+            except Exception as exc:self.emit('error',str(exc))
+            finally:
+                self.emit('audio',(0.,0.))
+                with self.lock:
+                    self.busy=False
+                    self.emit('state','Ready')
+        Thread(target=playback,daemon=True).start()
+        return True
 
     def start(self, message=None, speak=True, mode='auto'):
         with self.lock:
@@ -106,7 +147,10 @@ class VoiceController:
                 return
             self.emit('heard', message)
             active_mode = choose_mode(message, mode, getattr(self.agent, 'last_mode', 'companion'))
+            if gesture_for(message) and mode != 'focus':
+                active_mode = 'play'
             self.emit('mode', active_mode)
+            self.emit('expression', reaction_for(message, active_mode))
             self.emit('state', 'Thinking')
             if speak and not self.speech_stop.is_set():
                 worker = Thread(target=speak_queued, daemon=True)

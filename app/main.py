@@ -1,14 +1,9 @@
 from app.agent.agent import BMOAgent
-from app.memory.memory import initialise_memory
-from app.memory.history import initialise_history
 from ui.bmo_window import BMOWindow
 
 
 def start_bmo():
     print("BMO is starting...")
-
-    initialise_memory()
-    initialise_history()
 
     bmo = BMOAgent()
     bmo.start()

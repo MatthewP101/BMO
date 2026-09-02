@@ -1,16 +1,19 @@
 # BMO
 My BMO Ai local assistant. MY LOYAL SQUIREEEE
 
-## Fast local voice update
+## Major companion update
 
-Kokoro has been replaced by Pocket TTS, with CPU-only dependencies supporting
-Python 3.13 and 3.14. BMO speaks sentences while Qwen continues generating, uses
-less chat context, and keeps a compact, show-inspired personality with serious-task judgment.
-The responsive face and separate scrollable transcript remain.
+BMO now has twelve eased facial expressions, automatic/always/off blushing, a pink
+appearance option, separate conversations with scoped notes, and voice-reference
+profiles with small pitch/pace adjustments. His compact character instructions give
+him more personality while keeping serious tasks practical. Startup model warming,
+streamed speech and a short-utterance cache reduce avoidable waiting.
 
-**[Pull, install, audition voices and prepare a reference voice](docs/FAST_VOICE.md).**
-Bundled voices are starting points; an accurate BMO match still needs a suitable
-reference recording and listening tests. No exact-match claim is made.
+**[Pull, run and use the new controls](docs/MAJOR_COMPANION_UPDATE.md).**
+Your existing working voice stays selected. Python 3.13 and 3.14 are supported.
+A longer reference can be auditioned separately without losing the original profile.
+
+For a first voice installation, see [Pocket setup](docs/FAST_VOICE.md).
 
 # Hardware
 

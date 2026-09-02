@@ -16,6 +16,8 @@ def main():
         print(f'{name}: ' + ('installed' if importlib.util.find_spec(name) else 'missing'))
     print('Voice backend: ' + config['voice']['backend'])
     print('Voice: ' + (config['voice'].get('reference_voice') or config['voice']['pocket_voice']))
+    print('Voice tuning: pace ' + str(config['voice'].get('pace',1.)) + ', pitch ' + str(config['voice'].get('pitch_shift',0.)))
+    print('ffmpeg: ' + ('installed' if shutil.which('ffmpeg') else 'optional; needed for pace/pitch changes'))
     print('Fast replies: ' + str(config['llm'].get('fast_replies', True)))
     print('Routine history messages: ' + str(config['llm'].get('history_messages', 2)))
     print('Voice download check: python -m app.voice --download-voice')

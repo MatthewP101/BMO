@@ -1,5 +1,7 @@
 # Fast local voice update
 
+For the latest chat, expression and voice controls, see [the companion update](MAJOR_COMPANION_UPDATE.md).
+
 This replaces Kokoro with **Pocket TTS 3.0.2**, using CPU-only PyTorch 2.10.0.
 The application stays native Python/Tkinter. Qwen and Whisper remain local.
 Python 3.13 and 3.14 are supported by this dependency set; no downgrade is required.
@@ -31,8 +33,8 @@ If pip reports a conflict with old, unrelated packages, a fresh `.venv-voice` us
 
 ## What is faster
 
-- System instructions shrink from about 1,400 to about 470 words.
-- Only the latest exchange is included, bounded to 1,200 characters. Saved memories
+- System instructions use a compact character core with one relevant scene direction.
+- Only the latest exchange is included, bounded to 1,800 characters. Saved memories
   are still stored and explicitly retrievable, but are not injected into every turn.
 - Fast replies use a 4,096-token context, 160 output tokens for chat and 700 for focused
   explanations. Inputs over 6,000 characters use an 8,192-token context.
@@ -86,7 +88,7 @@ python -m app.voice --voice eponine --test-voice
 
 Alba and Fantine are also available. Azelma is the provisional default; a subjective
 similarity ranking needs listening with your reference and actual speaker.
-No artificial pitch filter or fake written accent is used.
+Neutral pace/pitch preserves the reference. Optional tuning is now available in Settings; no fake written accent is used.
 
 For a closer voice, choose a clean **6–20 second 16-bit PCM WAV**, preferably 10–15
 seconds, of one speaker delivering normal English dialogue. Avoid background music,
@@ -151,7 +153,7 @@ length. During conversation, controller metrics include `first_token_seconds`,
 first-text and first-sound timings. The audio metric starts
 at turn submission and includes hearing when applicable.
 
-Verification for this update: the 57-test suite passed on CPython 3.13.14 and
+Verification for the earlier voice update: the 57-test suite passed on CPython 3.13.14 and
 3.14.6. The actual Pocket backend generated 24 kHz mono WAV files on both versions,
 including a Python 3.14 run with `HF_HUB_OFFLINE=1`. On this build machine, warm first
 chunks arrived in 0.14–0.17 seconds; about 7 seconds of audio took 2.8–4.9 seconds to

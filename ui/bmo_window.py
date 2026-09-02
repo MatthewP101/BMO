@@ -4,7 +4,9 @@ from tkinter import filedialog, ttk
 from queue import Empty
 
 from app.config import load_config, save_preferences
-from app.memory.history import get_recent_history
+from app.memory.history import (get_recent_history, create_chat, get_chat, export_chat as saved_chat)
+from app.files import attachment_text
+from ui.themes import PALETTES, palette
 from app.voice.controller import VoiceController
 from ui.face import FACE_COLOUR, INK, FaceRenderer, layout_for
 
@@ -39,6 +41,17 @@ class BMOWindow:
         self.settings_window = None
         self.started = time.monotonic()
         ui = self.config['ui']
+        self.theme = tk.StringVar(value=ui.get('theme', 'classic'))
+        self.palette_name = 'classic'
+        self.blush = tk.StringVar(value=ui.get('blush', 'auto'))
+        self.blush_strength = tk.DoubleVar(value=ui.get('blush_strength', .75))
+        self.idle_animations = tk.BooleanVar(value=ui.get('idle_animations', True))
+        self.warm_start = tk.BooleanVar(value=ui.get('warm_start', True))
+        self.history_limit = 200
+        self.history_offset = 0
+        self.chats_window = None
+        chosen = get_chat(ui.get('active_chat', 'legacy'))
+        self.bmo.set_chat(chosen['id'] if chosen and not chosen['archived'] else create_chat())
         self.mode = tk.StringVar(value=ui.get('mode', 'auto'))
         self.speak_replies = tk.BooleanVar(value=ui.get('speak_replies', True))
         self.face_only = tk.BooleanVar(value=ui.get('face_only', False))
@@ -47,17 +60,21 @@ class BMOWindow:
         self.font_size = max(10, min(20, int(ui.get('font_size', 12))))
         self.fps = max(15, min(60, int(ui.get('fps', 40))))
         self._build()
+        self.apply_theme(self.theme.get())
         self.root.bind('<Configure>', self.schedule_layout)
         self.root.bind('<F11>', self.toggle_fullscreen)
         self.root.bind('<Escape>', self.escape)
         self.root.bind('<Control-l>', lambda event: self.entry.focus_set())
         self.root.bind('<Control-space>', self.toggle_recording)
         self.root.bind('<Control-period>', lambda event: self.controller.stop())
+        self.root.bind('<Control-n>', lambda event: self.new_chat())
         self.root.attributes('-fullscreen', self.fullscreen.get())
         self.root.after_idle(self.relayout)
         self.animate()
         self.poll_events()
         self.entry.focus_set()
+        if self.warm_start.get():
+            self.controller.warmup(self.speak_replies.get())
 
     def button(self, parent, text, command, accent=False):
         return tk.Button(parent, text=text, command=command, bg=ACCENT if accent else '#d7e5c9',
@@ -92,8 +109,9 @@ class BMOWindow:
         top = tk.Frame(self.conversation, bg=PANEL)
         self.conversation_header = top
         top.grid(row=0, column=0, sticky='ew', padx=12, pady=(10, 3))
-        tk.Label(top, text='OUR CONVERSATION', bg=PANEL, fg=MUTED,
-                 font=('DejaVu Sans', 9, 'bold')).pack(side='left')
+        self.button(top, 'Chats', self.open_chats).pack(side='left')
+        self.button(top, '+', self.new_chat).pack(side='left', padx=3)
+        self.button(top, 'Attach', self.attach_file).pack(side='left')
         self.copy_button = self.button(top, 'Copy', self.copy_reply)
         self.copy_button.pack(side='right')
         self.transcript_frame = tk.Frame(self.conversation, bg=PANEL)
@@ -133,20 +151,16 @@ class BMOWindow:
                                      values=('auto', 'focus', 'play'), state='readonly', width=7)
         self.mode_box.pack(side='right')
         self.mode_box.bind('<<ComboboxSelected>>', lambda event: self.persist())
-        history = get_recent_history(12)
-        if history:
-            for role, content in history:
-                self.add_message('YOU' if role == 'user' else 'BMO', content)
-                if role == 'assistant':
-                    self.last_reply = content
-        else:
-            self.add_notice('Tap Talk, or write a message. Shift+Enter adds a new line.')
+        self.load_current_chat()
 
     def persist(self):
         try:
             save_preferences('ui', {'mode': self.mode.get(), 'speak_replies': self.speak_replies.get(),
                                      'face_only': self.face_only.get(), 'fullscreen': self.fullscreen.get(),
-                                     'reduced_motion': self.reduced_motion.get()})
+                                     'reduced_motion': self.reduced_motion.get(), 'theme': self.theme.get(),
+                                     'blush': self.blush.get(), 'blush_strength': self.blush_strength.get(),
+                                     'idle_animations': self.idle_animations.get(), 'active_chat': self.bmo.chat_id,
+                                     'warm_start': self.warm_start.get()})
         except (OSError, ValueError) as exc:
             self.show_notice(f'Could not save preferences: {exc}')
 
@@ -209,12 +223,15 @@ class BMOWindow:
 
     def face_tap(self, event):
         if not self.controller.busy:
-            self.renderer.motion.set_expression('warm', time.monotonic() - self.started)
+            self.renderer.motion.set_expression('blush', time.monotonic() - self.started)
 
     def animate(self):
         if self.closed:
             return
         self.renderer.motion.reduced = self.reduced_motion.get()
+        self.renderer.motion.blush_mode = self.blush.get()
+        self.renderer.motion.blush_strength = self.blush_strength.get()
+        self.renderer.motion.idle_animations = self.idle_animations.get()
         self.renderer.draw(time.monotonic() - self.started)
         interval = 250 if self.root.state() == 'iconic' else round(1000 / (min(20, self.fps) if self.voice_state == 'Ready' else self.fps))
         self.draw_timer = self.root.after(interval, self.animate)
@@ -227,10 +244,13 @@ class BMOWindow:
         if bottom:
             self.transcript.see('end')
 
-    def add_message(self, role, text):
+    def add_message(self, role, text, trim=True):
         self.insert(role + '\n', 'role')
+        start = self.transcript.index('end-1c')
         self.insert(text + '\n\n')
-        self.trim_transcript()
+        self.format_code(start, text)
+        if trim:
+            self.trim_transcript()
 
     def add_notice(self, text):
         self.insert(text + '\n\n', 'notice')
@@ -253,6 +273,7 @@ class BMOWindow:
         message = self.entry.get('1.0', 'end-1c').strip()
         if not message:
             return 'break'
+        self.latest_page()
         if self.controller.start(message, self.speak_replies.get(), self.mode.get()):
             self.entry.delete('1.0', 'end')
             self.notice.configure(text='')
@@ -263,6 +284,7 @@ class BMOWindow:
         if self.voice_state == 'Listening':
             self.controller.stop_recording()
         elif not self.controller.busy:
+            self.latest_page()
             if self.controller.start(speak=self.speak_replies.get(), mode=self.mode.get()):
                 self.notice.configure(text='')
                 self.update_controls(True)
@@ -341,10 +363,15 @@ class BMOWindow:
             self.show_notice(value)
         elif kind == 'metrics':
             self.metrics = value
+        elif kind == 'warmup':
+            if not self.controller.busy:
+                self.status.configure(text=value)
+        elif kind == 'warmup_error':
+            self.notice.configure(text=value[:180])
 
     def format_code(self, start, text):
         import re
-        for match in re.finditer(r'```[\s\S]*?(?:```|$)', text):
+        for match in re.finditer(r'(`{3,}|~{3,})[\s\S]*?(?:\1|$)', text):
             self.transcript.tag_add('code', f'{start}+{match.start()}c', f'{start}+{match.end()}c')
 
     def copy_reply(self):
@@ -365,72 +392,121 @@ class BMOWindow:
         if filename:
             try:
                 with open(filename, 'w', encoding='utf-8') as file:
-                    file.write(self.transcript.get('1.0', 'end-1c'))
+                    for part in saved_chat(self.bmo.chat_id):
+                        file.write(part)
             except OSError as exc:
                 self.show_notice(str(exc))
 
     def open_settings(self):
-        if self.settings_window is not None and self.settings_window.winfo_exists():
-            self.settings_window.lift()
-            return
-        window = tk.Toplevel(self.root)
-        self.settings_window = window
-        window.title('BMO settings')
-        window.configure(bg=PANEL)
-        window.transient(self.root)
-        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        window.geometry(f'{min(430, sw-30)}x{min(550, sh-70)}')
-        canvas = tk.Canvas(window, bg=PANEL, highlightthickness=0)
-        scroll = ttk.Scrollbar(window, orient='vertical', command=canvas.yview)
-        canvas.configure(yscrollcommand=scroll.set)
-        scroll.pack(side='right', fill='y')
-        canvas.pack(side='left', fill='both', expand=True)
-        body = tk.Frame(canvas, bg=PANEL, padx=18, pady=16)
-        item = canvas.create_window(0, 0, window=body, anchor='nw')
-        canvas.bind('<Configure>', lambda event: canvas.itemconfigure(item, width=event.width))
-        body.bind('<Configure>', lambda event: canvas.configure(scrollregion=canvas.bbox('all')))
-        tk.Label(body, text='Make yourself comfortable.', bg=PANEL, fg=INK,
-                 font=('DejaVu Sans', 13, 'bold')).pack(anchor='w', pady=(0, 12))
-        for label, variable in [('Speak replies', self.speak_replies), ('Reduced motion', self.reduced_motion)]:
-            tk.Checkbutton(body, text=label, variable=variable, bg=PANEL, fg=INK,
-                           command=self.preference_changed).pack(anchor='w')
-        self.button(body, 'Fullscreen / window   F11', self.toggle_fullscreen).pack(fill='x', pady=8)
-        tk.Label(body, text='Voice', bg=PANEL, fg=MUTED).pack(anchor='w', pady=(10, 3))
-        voice = self.config['voice']
-        backend = tk.StringVar(value=voice.get('backend', 'pocket'))
-        ttk.Combobox(body, textvariable=backend, values=('pocket', 'espeak'), state='readonly').pack(fill='x')
-        name = tk.StringVar(value=voice.get('pocket_voice', 'azelma'))
-        ttk.Combobox(body, textvariable=name, values=('azelma', 'cosette', 'eponine', 'alba', 'fantine'), state='readonly').pack(fill='x', pady=5)
-        reference = tk.StringVar(value=voice.get('reference_voice', ''))
-        tk.Label(body, text='Prepared reference voice (optional)', bg=PANEL, fg=MUTED).pack(anchor='w')
-        tk.Entry(body, textvariable=reference).pack(fill='x', pady=5)
-        self.button(body, 'Use bundled voice', lambda: reference.set('')).pack(fill='x')
-        def apply_voice():
-            if self.controller.busy:
-                self.show_notice('Finish the current reply before changing the voice.')
-                return
-            changes = dict(backend=backend.get(), pocket_voice=name.get(), reference_voice=reference.get().strip())
+        from ui.dialogs import open_settings
+        open_settings(self)
+
+    def open_chats(self):
+        from ui.dialogs import open_chats
+        open_chats(self)
+
+    def open_notes(self):
+        from ui.dialogs import open_notes
+        open_notes(self)
+
+    def apply_theme(self, name):
+        old, new = palette(self.palette_name), palette(name)
+        replacements = {old[key]:new[key] for key in old}
+        replacements.update({PALETTES['classic'][key]:new[key] for key in new})
+        def recolour(widget):
+            keys = widget.keys()
+            for option in ('background','foreground','activebackground','activeforeground',
+                           'insertbackground','selectbackground','selectforeground','highlightbackground'):
+                if option in keys:
+                    value = str(widget.cget(option))
+                    if value in replacements:
+                        widget.configure(**{option:replacements[value]})
+            for child in widget.winfo_children():
+                recolour(child)
+        recolour(self.root)
+        self.palette_name = name if name in PALETTES else 'classic'
+        self.renderer.set_theme(self.palette_name)
+        self.transcript.tag_configure('role',foreground=new['muted'])
+        self.transcript.tag_configure('notice',foreground=new['notice'])
+        self.transcript.tag_configure('code',background=new['code'])
+        style = ttk.Style(self.root)
+        style.configure('BMO.TCombobox',fieldbackground=new['entry'],foreground=new['ink'])
+        self.mode_box.configure(style='BMO.TCombobox')
+
+    def load_current_chat(self):
+        self.transcript.configure(state='normal')
+        self.transcript.delete('1.0','end')
+        self.transcript.configure(state='disabled')
+        self.reply_open = False
+        self.streaming_reply = self.last_reply = ''
+        self.metrics = {}
+        rows = get_recent_history(self.history_limit, self.bmo.chat_id, self.history_offset)
+        chat = get_chat(self.bmo.chat_id)
+        self.root.title('BMO — ' + chat['title'])
+        if self.history_offset:
+            self.add_notice('Earlier messages. Chats → Latest messages returns to the present.')
+        elif len(rows) == self.history_limit:
+            self.add_notice('Showing recent messages. Use Chats → Earlier messages to browse older pages.')
+        if rows:
+            for role, content in rows:
+                self.add_message('YOU' if role=='user' else 'BMO', content, trim=False)
+                if role=='assistant':
+                    self.last_reply = content
+        else:
+            self.add_notice('A fresh little conversation. Tap Talk, or write a message.')
+        self.transcript.see('end')
+
+    def latest_page(self):
+        if self.history_offset and not self.controller.busy:
+            self.history_offset = 0
+            self.load_current_chat()
+
+    def switch_chat(self, chat_id):
+        if self.controller.busy:
+            self.show_notice('Finish or stop the current reply before changing chats.')
+            return False
+        # Ready can be queued just before the click. Finish the old chat's UI
+        # events before loading the new transcript, so late tokens cannot spill.
+        while True:
             try:
-                save_preferences('voice', changes)
-                self.config['voice'].update(changes)
-                self.controller.settings.update(changes)
-                self.controller.speaker.settings.update(changes)
-                self.notice.configure(text='Voice settings saved.')
-            except (OSError, ValueError) as exc:
-                self.show_notice(str(exc))
-        self.button(body, 'Apply voice', apply_voice, True).pack(fill='x', pady=8)
-        timings = []
-        for key, label in [('first_token_seconds', 'First text'), ('first_audio_seconds', 'First sound')]:
-            value = self.metrics.get(key)
-            if isinstance(value, (int, float)):
-                timings.append(f'{label}: {value:.2f}s')
-        if timings:
-            tk.Label(body, text='Last reply — ' + ' / '.join(timings), bg=PANEL, fg=MUTED,
-                     wraplength=320).pack(anchor='w', pady=5)
-        tk.Label(body, text='Pocket runs locally. Bundled voices are approximations.\nPrepare a personal reference with python -m app.voice --reference.\nAuto adapts tone; Focus keeps responses practical.\nCtrl+Space: talk / finish. Escape: stop or leave fullscreen.',
-                 wraplength=320, justify='left', bg=PANEL, fg=MUTED, font=('DejaVu Sans', 9)).pack(anchor='w', pady=10)
-        self.button(body, 'Export visible conversation', self.export_chat).pack(fill='x')
-        self.button(body, 'Close settings', window.destroy).pack(fill='x', pady=8)
+                kind, value = self.controller.events.get_nowait()
+            except Empty:
+                break
+            self.handle_event(kind,value)
+        self.bmo.set_chat(chat_id)
+        self.history_limit = 200
+        self.history_offset = 0
+        self.entry.delete('1.0','end')
+        self.notice.configure(text='')
+        self.renderer.motion.mode = 'companion'
+        self.renderer.motion.set_expression('warm',time.monotonic()-self.started)
+        self.load_current_chat()
+        self.persist()
+        return True
+
+    def new_chat(self):
+        if self.controller.busy:
+            self.show_notice('Finish or stop the current reply before starting a chat.')
+            return 'break'
+        self.switch_chat(create_chat())
+        return 'break'
+
+    def attach_file(self):
+        if self.controller.busy:
+            return
+        filename = filedialog.askopenfilename(parent=self.root,title='Choose a text or source-code file')
+        if not filename:
+            return
+        try:
+            text = attachment_text(filename)
+            current = self.entry.get('1.0','end-1c')
+            if len(current)+len(text)+2 > 12000:
+                raise ValueError('The message is too long. Use a smaller excerpt or a fresh message.')
+            self.entry.insert('end','\n\n' + text if current else text)
+            self.entry.focus_set()
+            self.notice.configure(text='File excerpt added to your draft. Add a question, then Send.')
+        except (OSError,ValueError) as exc:
+            self.show_notice(str(exc))
 
     def preference_changed(self):
         if not self.speak_replies.get():
