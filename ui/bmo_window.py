@@ -1,6 +1,10 @@
 import math
 import random
 import tkinter as tk
+from queue import Empty
+
+from app.config import load_config
+from app.voice.controller import VoiceController
 
 
 class BMOWindow:
@@ -13,6 +17,11 @@ class BMOWindow:
 
     def __init__(self, bmo):
         self.bmo = bmo
+        self.controller = VoiceController(bmo, load_config()["voice"])
+        self.voice_state = "Ready"
+        self.closed = False
+        self.poll_timer = None
+        self.talk_timer = None
 
         # -----------------------------
         # face state
@@ -56,8 +65,9 @@ class BMOWindow:
 
         self.root = tk.Tk()
         self.root.title("BMO")
-        self.root.geometry("900x500")
-        self.root.minsize(700, 400)
+        self.root.geometry("900x650")
+        self.root.minsize(700, 550)
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
 
         # -----------------------------
         # face
@@ -86,7 +96,17 @@ class BMOWindow:
             pady=8,
         )
 
+        self.response_label.configure(wraplength=850, justify="left")
         self.response_label.pack(fill="x")
+        self.root.bind("<Configure>", self.resize_labels)
+
+        self.heard_label = tk.Label(self.root, text="", anchor="w", padx=12)
+        self.heard_label.pack(fill="x")
+        self.status_label = tk.Label(self.root, text="Ready — click Talk to record", anchor="w", padx=12)
+        self.status_label.pack(fill="x")
+        self.error_label = tk.Label(self.root, text="", fg="#a02020", anchor="w", padx=12,
+                                    wraplength=850, justify="left")
+        self.error_label.pack(fill="x")
 
         # -----------------------------
         # chat
@@ -125,7 +145,17 @@ class BMOWindow:
             self.send_message,
         )
 
+        self.voice_frame = tk.Frame(self.root)
+        self.voice_frame.pack(fill="x", padx=10, pady=(0, 10))
+        self.talk_button = tk.Button(self.voice_frame, text="Talk", command=self.toggle_recording)
+        self.talk_button.pack(side="left")
+        self.stop_voice_button = tk.Button(self.voice_frame, text="Stop voice", state="disabled",
+                                           command=self.controller.stop_speaking)
+        self.stop_voice_button.pack(side="left", padx=10)
+        self.speak_replies = tk.BooleanVar(value=True)
+        tk.Checkbutton(self.voice_frame, text="Speak replies", variable=self.speak_replies).pack(side="left")
         self.entry.focus()
+        self.poll_events()
 
         # -----------------------------
         # startup
@@ -733,51 +763,96 @@ class BMOWindow:
     # chat
     # ==================================================
 
+    def resize_labels(self, event):
+        if event.widget is self.root:
+            width = max(300, event.width - 24)
+            self.response_label.configure(wraplength=width)
+            if hasattr(self, "error_label"):
+                self.error_label.configure(wraplength=width)
+
+    def begin_turn(self, message=None):
+        if self.controller.start(message, speak=self.speak_replies.get()):
+            self.error_label.config(text="")
+            self.set_voice_state("Starting")
+            return True
+        return False
+
     def send_message(self, event=None):
         message = self.entry.get().strip()
-
-        if not message:
+        if not message or self.controller.busy:
             return
-
-        self.entry.delete(
-            0,
-            tk.END,
-        )
-
-        if message.lower() == "exit":
-            self.root.destroy()
+        if message.casefold() == "exit":
+            self.close()
             return
+        if self.begin_turn(message):
+            self.entry.delete(0, tk.END)
 
-        # count chats
-        self.chat_count += 1
+    def toggle_recording(self):
+        if self.voice_state == "Listening":
+            self.controller.stop_recording()
+            self.talk_button.config(state="disabled")
+        elif not self.controller.busy:
+            self.begin_turn()
 
-        # change expression every 3 messages
-        if self.chat_count % self.CHATS_PER_EXPRESSION == 0:
-            new_expression = self.choose_new_expression()
+    def set_voice_state(self, state):
+        self.voice_state = state
+        labels = {
+            "Ready": "Ready — click Talk to record",
+            "Listening": "Listening — click Finish, or recording ends after the time limit",
+            "Transcribing": "Transcribing — first use may download the speech model",
+        }
+        self.status_label.config(text=labels.get(state, state + "…"))
+        self.send_button.config(state="normal" if state == "Ready" else "disabled")
+        self.talk_button.config(text="Finish" if state == "Listening" else "Talk",
+                               state="normal" if state in {"Ready", "Listening"} else "disabled")
+        self.stop_voice_button.config(state="normal" if state in {"Speaking", "Preparing voice"} else "disabled")
+        if state == "Speaking":
+            if self.talk_timer is None:
+                self.animate_speech()
+        else:
+            if self.talk_timer is not None:
+                self.root.after_cancel(self.talk_timer)
+                self.talk_timer = None
+            self.stop_talking()
 
-            self.transition_expression(
-                new_expression
-            )
+    def animate_speech(self):
+        self.talk_timer = None
+        if self.voice_state == "Speaking" and not self.closed:
+            self.is_talking = not self.is_talking
+            self.draw_face()
+            self.talk_timer = self.root.after(120, self.animate_speech)
 
-            # restart the 2 minute timer
-            self.schedule_expression_change()
+    def poll_events(self):
+        if self.closed:
+            return
+        try:
+            while True:
+                kind, value = self.controller.events.get_nowait()
+                if kind == "state":
+                    self.set_voice_state(value)
+                elif kind == "heard":
+                    self.heard_label.config(text="You: " + value[:160])
+                elif kind == "reply":
+                    self.response_label.config(text="BMO: " + value)
+                    self.chat_count += 1
+                    if self.chat_count % self.CHATS_PER_EXPRESSION == 0:
+                        self.transition_expression(self.choose_new_expression())
+                        self.schedule_expression_change()
+                elif kind in {"error", "notice"}:
+                    self.error_label.config(text=value)
+        except Empty:
+            pass
+        self.poll_timer = self.root.after(50, self.poll_events)
 
-        self.start_talking()
-
-        self.root.update_idletasks()
-
-        response = self.bmo.respond(message)
-
-        self.response_label.config(
-            text=f"BMO: {response}"
-        )
-
-        # temporary talking duration
-        # later TTS will control this instead
-        self.root.after(
-            650,
-            self.stop_talking,
-        )
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        self.controller.close()
+        # cancel every tkinter timer, including idle motion and expression transitions
+        for timer in self.root.tk.call("after", "info"):
+            self.root.after_cancel(timer)
+        self.root.destroy()
 
     # ==================================================
     # run

@@ -1,7 +1,10 @@
 import sqlite3
+from pathlib import Path
+from app.config import ROOT
 
-DATABASE_PATH = "data/bmo.db"
+DATABASE_PATH = ROOT / "data/bmo.db"
 
 
 def get_connection():
-    return sqlite3.connect(DATABASE_PATH)
+    Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
+    return sqlite3.connect(DATABASE_PATH, timeout=10)

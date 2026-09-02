@@ -19,3 +19,7 @@ models/*.safetensors
 .vscode/
 .DS_Store
 Thumbs.db
+
+# personal configuration and downloaded speech models
+config/config.json
+models/whisper/

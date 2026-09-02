@@ -1,9 +1,21 @@
 {
     "assistant_name": "BMO",
     "llm": {
-        "backend": "local",
-        "model": "qwen3.5",
-        "host": "127.0.0.1",
-        "port": 8080
+        "backend": "ollama",
+        "model": "qwen3.5:4b",
+        "url": "http://127.0.0.1:11434",
+        "timeout": 120,
+        "num_ctx": 4096,
+        "num_predict": 180
+    },
+    "voice": {
+        "whisper_model": "base.en",
+        "language": "en",
+        "input_device": null,
+        "output_device": null,
+        "max_record_seconds": 30,
+        "espeak_voice": "en+f3",
+        "pitch": 65,
+        "speed": 155
     }
 }
