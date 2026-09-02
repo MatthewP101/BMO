@@ -1,3 +1,5 @@
+> Historical setup notes. Use [Fast local voice setup](FAST_VOICE.md) for current installation and Python 3.13/3.14 support.
+
 # First voice prototype (historical)
 
 For the current version, follow [Expressive BMO update](EXPRESSIVE_UPDATE.md).

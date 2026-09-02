@@ -26,6 +26,9 @@ def load_config():
         for section in ('llm', 'voice', 'ui'):
             if not isinstance(settings.get(section), dict):
                 raise ValueError(f'{section} must be an object')
+        # Migrate in memory; retain the user's device choices and original file.
+        if settings['voice'].get('backend') == 'kokoro':
+            settings['voice']['backend'] = 'pocket'
         return settings
     except (OSError, ValueError) as exc:
         raise RuntimeError(f'Cannot read BMO settings: {exc}') from exc

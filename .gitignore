@@ -27,3 +27,7 @@ models/whisper/
 # neural voice models and temporary configuration
 models/kokoro/
 config/config.json.tmp
+
+# Local reference voice embeddings and voice auditions
+models/pocket/
+data/voice-tests/

@@ -110,20 +110,25 @@ class TestSpeechPresentation(unittest.TestCase):
         samples = np.sin(np.linspace(0, 20, 480)) * .2
         self.assertGreater(audio_shape(samples)[0], 0)
 
-    def test_missing_neural_model_has_setup_instruction(self):
-        with tempfile.TemporaryDirectory() as directory:
-            speaker = TextToSpeech({'kokoro_model': str(Path(directory)/'missing.onnx')})
-            with self.assertRaisesRegex(RuntimeError, 'download-voice'):
-                speaker.load()
+    def test_missing_neural_package_has_setup_instruction(self):
+        import sys
+        with patch.dict(sys.modules, {'pocket_tts': None, 'torch': Mock()}):
+            with self.assertRaisesRegex(RuntimeError, 'requirements.txt'):
+                TextToSpeech({}).load()
 
-    def test_neural_backend_uses_configured_voice(self):
-        speaker = TextToSpeech({'kokoro_voice': 'af_bella', 'volume': .5})
+    def test_neural_backend_reuses_configured_voice(self):
+        speaker = TextToSpeech({'pocket_voice': 'cosette', 'volume': .5})
         speaker.model = Mock()
-        speaker.model.create.return_value = (np.ones(2400, dtype=np.float32) * .2, 24000)
-        samples, rate = speaker.synthesise('Hello', 'focus')
-        self.assertEqual(speaker.model.create.call_args.kwargs['voice'], 'af_bella')
-        self.assertEqual(rate, 24000)
-        np.testing.assert_allclose(samples, .1)
+        speaker.model.sample_rate = 24000
+        chunk = Mock()
+        chunk.detach.return_value.cpu.return_value.numpy.return_value = np.ones(2400, dtype=np.float32) * .2
+        speaker.model.generate_audio_stream.side_effect = lambda *a, **k: iter([chunk])
+        for _ in range(2):
+            samples, rate = speaker.synthesise('Hello', 'focus')
+            self.assertEqual(rate, 24000)
+            np.testing.assert_allclose(samples, .1)
+        speaker.model.get_state_for_audio_prompt.assert_called_once_with('cosette')
+        self.assertTrue(speaker.model.generate_audio_stream.call_args.kwargs['copy_state'])
 
 
 class TestStreaming(unittest.TestCase):

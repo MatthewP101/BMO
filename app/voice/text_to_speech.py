@@ -39,55 +39,118 @@ def audio_shape(samples):
 
 
 class TextToSpeech:
+    """One persistent CPU model and voice state, shared by sequential turns."""
     def __init__(self, settings):
         self.settings = settings
         self.model = None
+        self.voice_state = None
+        self.voice_key = None
 
     def load(self):
-        if self.model is not None:
+        if self.settings.get('backend', 'pocket') == 'espeak':
             return
-        model = ROOT / self.settings.get('kokoro_model', 'models/kokoro/kokoro-v1.0.onnx')
-        voices = ROOT / self.settings.get('kokoro_voices', 'models/kokoro/voices-v1.0.bin')
-        if not model.is_file() or not voices.is_file():
-            raise RuntimeError('Neural voice not downloaded. Run: python -m app.voice --download-voice')
-        try:
-            import onnxruntime as rt
-            from kokoro_onnx import Kokoro
-        except ImportError as exc:
-            raise RuntimeError('Install the updated voice packages: python -m pip install -r requirements.txt') from exc
-        options = rt.SessionOptions()
-        options.intra_op_num_threads = 2
-        options.inter_op_num_threads = 1
-        session = rt.InferenceSession(str(model), sess_options=options, providers=['CPUExecutionProvider'])
-        self.model = Kokoro.from_session(session, str(voices))
+        if self.model is None:
+            try:
+                import torch
+                from pocket_tts import TTSModel
+            except ImportError as exc:
+                raise RuntimeError('Install the voice packages: python -m pip install -r requirements.txt') from exc
+            torch.set_num_threads(min(4, max(1, int(self.settings.get('cpu_threads', 2)))))
+            try:
+                self.model = TTSModel.load_model(language='english')
+            except Exception as exc:
+                raise RuntimeError('Cannot load Pocket TTS. Connect to the internet for the first download, then run '
+                                   'python -m app.voice --download-voice. Details: ' + str(exc)) from exc
+        reference = self.settings.get('reference_voice', '').strip()
+        source = str((ROOT / reference).resolve()) if reference else self.settings.get('pocket_voice', 'azelma')
+        if reference:
+            path = Path(source)
+            if not path.is_file():
+                raise RuntimeError('Reference voice file is missing. Choose another WAV in Settings or clear the reference.')
+            if path.suffix.lower() != '.safetensors' and not self.model.has_voice_cloning:
+                raise RuntimeError('Reference voices need access to kyutai/pocket-tts on Hugging Face and hf auth login. '
+                                   'See docs/FAST_VOICE.md. Clear the reference to use a bundled voice.')
+            key = (source, path.stat().st_mtime_ns)
+        else:
+            key = (source,)
+        if self.voice_key != key:
+            self.voice_state = self.model.get_state_for_audio_prompt(source)
+            self.voice_key = key
 
-    def synthesise(self, text, mode='companion'):
+    def audio_chunks(self, text, mode='companion'):
         import numpy as np
-        backend = self.settings.get('backend', 'kokoro')
+        backend = self.settings.get('backend', 'pocket')
+        volume = min(1.0, max(0.0, float(self.settings.get('volume', 0.85))))
         if backend == 'espeak':
-            return self._espeak(text)
-        if backend != 'kokoro':
+            samples, rate = self._espeak(text)
+            yield np.clip(samples * volume, -1, 1), rate
+            return
+        if backend != 'pocket':
             raise RuntimeError(f'Unknown voice backend: {backend}')
         self.load()
-        speed = min(1.3, max(0.7, float(self.settings.get('kokoro_speed', 0.96))))
-        samples, rate = self.model.create(
-            text, voice=self.settings.get('kokoro_voice', 'af_sky'),
-            speed=speed if mode == 'focus' else speed * 1.015, lang='en-us')
-        samples = np.asarray(samples, dtype=np.float32)
-        pitch = min(4.0, max(-3.0, float(self.settings.get('pitch_semitones', 0))))
-        if pitch:
-            executable = shutil.which('ffmpeg')
-            if not executable:
-                raise RuntimeError('Pitch adjustment needs ffmpeg; set pitch_semitones to 0 or install ffmpeg.')
-            ratio = 2 ** (pitch / 12)
-            process = subprocess.run(
-                [executable, '-hide_banner', '-loglevel', 'error', '-f', 'f32le', '-ar', str(rate),
-                 '-ac', '1', '-i', 'pipe:0', '-af', f'asetrate={rate * ratio},aresample={rate},atempo={1 / ratio}',
-                 '-f', 'f32le', 'pipe:1'], input=samples.astype('<f4').tobytes(),
-                capture_output=True, check=True, timeout=30)
-            samples = np.frombuffer(process.stdout, dtype='<f4').copy()
-        volume = min(1.0, max(0.0, float(self.settings.get('volume', 0.85))))
-        return np.clip(samples * volume, -1, 1), rate
+        # The API copies the cached state; speech must not accumulate a new history.
+        chunks = self.model.generate_audio_stream(self.voice_state, text, copy_state=True)
+        try:
+            for chunk in chunks:
+                samples = chunk.detach().cpu().numpy().astype(np.float32, copy=False).reshape(-1)
+                yield np.clip(samples * volume, -1, 1), self.model.sample_rate
+        finally:
+            # Pocket's decoder runs in a worker. Drain before reusing the model;
+            # otherwise Stop followed by Talk could overlap non-thread-safe calls.
+            for _ in chunks:
+                pass
+
+    def synthesise(self, text, mode='companion'):
+        """File/benchmark API. Live playback uses audio_chunks instead."""
+        import numpy as np
+        chunks, rate = [], 24000
+        for samples, rate in self.audio_chunks(text, mode):
+            chunks.append(samples)
+        return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32), rate
+
+    def speak(self, text, stop_event, on_start, on_end, on_audio=None, mode='companion'):
+        try:
+            import sounddevice as sd
+        except (OSError, ImportError) as exc:
+            raise RuntimeError('Audio output needs sounddevice and PortAudio: '
+                               'python -m pip install -r requirements.txt; sudo apt install libportaudio2') from exc
+        from contextlib import ExitStack
+        if stop_event.is_set():
+            return
+        started, aborted = False, False
+        chunks = self.audio_chunks(text, mode)
+        try:
+            with ExitStack() as stack:
+                stream = None
+                for samples, rate in chunks:
+                    if stop_event.is_set():
+                        if stream is not None and not aborted:
+                            stream.abort()
+                            aborted = True
+                        continue
+                    if stream is None:
+                        stream = stack.enter_context(sd.OutputStream(
+                            samplerate=rate, channels=1, dtype='float32', blocksize=480,
+                            latency='low', device=self.settings.get('output_device')))
+                        on_start()
+                        started = True
+                    for offset in range(0, len(samples), 480):
+                        if stop_event.is_set():
+                            stream.abort()
+                            aborted = True
+                            break
+                        block = samples[offset:offset + 480]
+                        stream.write(block.reshape(-1, 1))
+                        if on_audio is not None:
+                            on_audio(audio_shape(block))
+        except sd.PortAudioError as exc:
+            raise RuntimeError('Speaker unavailable. Check Ubuntu Settings > Sound and the selected output device.') from exc
+        finally:
+            chunks.close()
+            if on_audio is not None:
+                on_audio((0.0, 0.0))
+            if started:
+                on_end()
 
     def _espeak(self, text):
         import numpy as np
@@ -106,37 +169,3 @@ class TextToSpeech:
                     raise RuntimeError('Unsupported eSpeak sample format.')
                 samples = np.frombuffer(wav.readframes(wav.getnframes()), dtype='<i2').astype(np.float32) / 32768
             return samples, rate
-
-    def speak(self, text, stop_event, on_start, on_end, on_audio=None, mode='companion'):
-        import sounddevice as sd
-        if stop_event.is_set():
-            return
-        # modest chunks bound synthesis latency and make stop work between chunks
-        chunks = re.findall(r'.{1,280}(?:\s|$)|\S{1,280}', text)
-        for chunk in chunks:
-            if stop_event.is_set():
-                break
-            samples, rate = self.synthesise(chunk.strip(), mode)
-            if stop_event.is_set():
-                break
-            started = False
-            try:
-                with sd.OutputStream(samplerate=rate, channels=1, dtype='float32',
-                                     blocksize=480, latency='low', device=self.settings.get('output_device')) as stream:
-                    on_start()
-                    started = True
-                    for offset in range(0, len(samples), 480):
-                        if stop_event.is_set():
-                            stream.abort()
-                            break
-                        block = samples[offset:offset + 480]
-                        stream.write(block.reshape(-1, 1))
-                        if on_audio is not None:
-                            on_audio(audio_shape(block))
-            except sd.PortAudioError as exc:
-                raise RuntimeError('Speaker unavailable. Check Ubuntu Settings > Sound and the selected output device.') from exc
-            finally:
-                if on_audio is not None:
-                    on_audio((0.0, 0.0))
-                if started:
-                    on_end()

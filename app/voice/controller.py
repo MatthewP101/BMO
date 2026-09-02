@@ -1,11 +1,12 @@
-from queue import Queue
+from queue import Queue, Empty, Full
 from threading import Event, Lock, Thread
 from time import monotonic
 
 from app.agent.character import choose_mode
 from app.llm.llm_client import TurnCancelled
 from app.voice.speech_to_text import SpeechToText, record_audio
-from app.voice.text_to_speech import TextToSpeech, spoken_text
+from app.voice.text_to_speech import TextToSpeech
+from app.voice.sentences import SpeechSentences
 
 
 class VoiceController:
@@ -37,7 +38,58 @@ class VoiceController:
 
     def _turn(self, message, speak, mode):
         started = monotonic()
+        speech_queue = Queue(maxsize=32)
+        generation_done = Event()
+        worker = None
+        speech_errors = []
+        audio_metrics = {}
+        streamed = False
+        queue_full = False
+        sentences = None
+
+        def enqueue(parts):
+            nonlocal queue_full
+            if not speak or self.speech_stop.is_set() or queue_full:
+                return
+            for part in parts:
+                try:
+                    speech_queue.put_nowait(part)
+                except Full:
+                    queue_full = True
+                    break
+
+        def token(piece):
+            nonlocal streamed
+            streamed = True
+            self.emit('token', piece)
+            if speak:
+                enqueue(sentences.feed(piece))
+
+        def begin_audio():
+            if 'first_audio_seconds' not in audio_metrics:
+                audio_metrics['first_audio_seconds'] = round(monotonic() - started, 3)
+            self.emit('state', 'Speaking')
+
+        def speak_queued():
+            try:
+                # Load concurrently with Ollama's prefill, only for spoken turns.
+                self.speaker.load()
+                while not self.speech_stop.is_set():
+                    try:
+                        text = speech_queue.get(timeout=0.05)
+                    except Empty:
+                        if generation_done.is_set():
+                            break
+                        continue
+                    self.emit('state', 'Preparing voice')
+                    self.speaker.speak(text, self.speech_stop, begin_audio,
+                                       lambda: self.emit('state', 'Preparing voice'),
+                                       lambda shape: self.emit('audio', shape), active_mode)
+            except Exception as exc:
+                speech_errors.append(str(exc) or type(exc).__name__)
+
         try:
+            sentences = SpeechSentences(int(self.settings.get('max_spoken_chars', 600)))
             if message is None:
                 self.emit('state', 'Preparing microphone')
                 audio = self.recorder(self.record_stop, self.settings,
@@ -56,30 +108,38 @@ class VoiceController:
             active_mode = choose_mode(message, mode, getattr(self.agent, 'last_mode', 'companion'))
             self.emit('mode', active_mode)
             self.emit('state', 'Thinking')
-            response = self.agent.respond(message, mode=mode,
-                                          on_token=lambda token: self.emit('token', token),
-                                          cancel_event=self.cancelled)
+            if speak and not self.speech_stop.is_set():
+                worker = Thread(target=speak_queued, daemon=True)
+                worker.start()
+            response = self.agent.respond(message, mode=mode, on_token=token, cancel_event=self.cancelled)
             if self.cancelled.is_set():
                 return
             self.emit('reply', response)
             self.emit('expression', self.agent.last_expression)
+            if speak:
+                enqueue(sentences.feed('' if streamed else response, final=True))
+            generation_done.set()
+            if worker is not None:
+                worker.join()
             metrics = getattr(self.agent.llm, 'last_metrics', {})
-            self.emit('metrics', metrics if isinstance(metrics, dict) else {})
-            if isinstance(metrics, dict) and metrics.get('truncated'):
+            metrics = dict(metrics) if isinstance(metrics, dict) else {}
+            metrics.update(audio_metrics)
+            self.emit('metrics', metrics)
+            if metrics.get('truncated'):
                 self.emit('notice', 'Reply reached its length limit. Ask BMO to continue.')
-            if speak and not self.speech_stop.is_set():
-                text = spoken_text(response, int(self.settings.get('max_spoken_chars', 900)))
-                if text:
-                    self.emit('state', 'Preparing voice')
-                    self.speaker.speak(text, self.speech_stop,
-                                       lambda: self.emit('state', 'Speaking'),
-                                       lambda: self.emit('state', 'Preparing voice'),
-                                       lambda shape: self.emit('audio', shape), active_mode)
+            if queue_full:
+                self.emit('notice', 'The rest of the answer is in the conversation.')
+            for error in speech_errors:
+                self.emit('error', error)
         except TurnCancelled:
             self.emit('notice', 'Stopped. The unfinished answer was not saved.')
         except Exception as exc:
             self.emit('error', str(exc) or type(exc).__name__)
         finally:
+            generation_done.set()
+            self.speech_stop.set()
+            if worker is not None:
+                worker.join()
             self.emit('audio', (0.0, 0.0))
             self.emit('elapsed', monotonic() - started)
             with self.lock:

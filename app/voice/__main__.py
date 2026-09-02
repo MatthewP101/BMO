@@ -1,65 +1,128 @@
+"""Download, audition and measure the same voice path used by the desktop app."""
 import argparse
+import json
+import sys
+import wave
 from pathlib import Path
-from urllib import request
 from threading import Event
+from time import monotonic
 
-from app.config import ROOT, load_config
+from app.config import ROOT, load_config, save_preferences
 from app.voice.speech_to_text import SpeechToText
 from app.voice.text_to_speech import TextToSpeech
 
-VOICE_FILES = {
-    'kokoro-v1.0.onnx': 325532387,
-    'voices-v1.0.bin': 28214398,
-}
-VOICE_BASE = 'https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/'
+VOICES = ('azelma', 'cosette', 'eponine', 'alba', 'fantine')
+TEST_TEXT = 'Oh, hello, Matthew. What are we doing today? I have a very small adventure in mind.'
 
 
-def download_voice():
-    directory = ROOT / 'models/kokoro'
+def use_reference(path, settings):
+    """Export once; subsequent startups load the small cached voice state."""
+    import hashlib
+    import numpy as np
+    from pocket_tts import export_model_state
+    source = Path(path).expanduser().resolve()
+    if not source.is_file():
+        raise ValueError('Reference file does not exist.')
+    if source.stat().st_size > 20_000_000:
+        raise ValueError('Use a short WAV reference, under 20 MB.')
+    try:
+        with wave.open(str(source), 'rb') as wav:
+            duration = wav.getnframes() / wav.getframerate()
+            if wav.getsampwidth() != 2 or not 6 <= duration <= 20:
+                raise ValueError('Use a clean 6–20 second, 16-bit PCM WAV with one speaker.')
+            raw = wav.readframes(wav.getnframes())
+            if len(raw) != wav.getnframes() * wav.getnchannels() * 2:
+                raise ValueError('Reference WAV is incomplete.')
+            samples = np.frombuffer(raw, dtype='<i2').astype(np.float32) / 32768
+            if float(np.sqrt(np.mean(samples * samples))) < 0.003:
+                raise ValueError('Reference WAV is silent or too quiet. Choose clear dialogue.')
+    except wave.Error as exc:
+        raise ValueError('Reference must be a 16-bit PCM WAV. See docs/FAST_VOICE.md for conversion.') from exc
+    speaker = TextToSpeech(dict(settings, backend='pocket', reference_voice=str(source)))
+    speaker.load()
+    directory = ROOT / 'models/pocket/voices'
     directory.mkdir(parents=True, exist_ok=True)
-    for name, expected in VOICE_FILES.items():
-        target = directory / name
-        if target.exists() and target.stat().st_size == expected:
-            print(f'{name}: already downloaded')
-            continue
-        partial = target.with_suffix(target.suffix + '.part')
-        print(f'Downloading {name} ({expected / 1e6:.0f} MB)...', flush=True)
-        try:
-            with request.urlopen(VOICE_BASE + name, timeout=60) as source, partial.open('wb') as dest:
-                while chunk := source.read(1024 * 1024):
-                    dest.write(chunk)
-            if partial.stat().st_size != expected:
-                raise RuntimeError(f'{name}: unexpected download size; original file preserved. Try again.')
-            partial.replace(target)
-        finally:
-            partial.unlink(missing_ok=True)
-    print('Neural voice ready. Restart BMO.')
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()[:20]
+    target = directory / f'english-3.0.2-{digest}.safetensors'
+    temporary = target.with_suffix('.tmp.safetensors')
+    try:
+        export_model_state(speaker.voice_state, str(temporary))
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    changes = dict(backend='pocket', reference_voice=str(target.relative_to(ROOT)))
+    save_preferences('voice', changes)
+    settings.update(changes)
+    print('Reference voice prepared and selected. Restart BMO to use it.')
+
+
+def write_audio(speaker, text, output):
+    import numpy as np
+    started, first, count = monotonic(), None, 0
+    # Opening the file before inference also catches unwritable paths early.
+    with wave.open(str(output), 'wb') as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        for samples, rate in speaker.audio_chunks(text):
+            if first is None:
+                first = monotonic() - started
+                wav.setframerate(rate)
+            wav.writeframes((np.clip(samples, -1, 1) * 32767).astype('<i2').tobytes())
+            count += len(samples)
+    if not count:
+        raise RuntimeError('Voice generated no audio.')
+    return dict(first_audio_seconds=round(first, 3), synthesis_seconds=round(monotonic()-started, 3),
+                audio_seconds=round(count/rate, 3))
 
 
 def main():
-    parser = argparse.ArgumentParser(description='BMO voice setup and checks')
+    parser = argparse.ArgumentParser(description='BMO local voice setup and checks')
     parser.add_argument('--download-model', action='store_true', help='download the hearing model')
-    parser.add_argument('--download-voice', action='store_true', help='download the local neural voice')
+    parser.add_argument('--download-voice', action='store_true', help='download and load Pocket TTS')
     parser.add_argument('--devices', action='store_true')
     parser.add_argument('--test-voice', action='store_true')
-    parser.add_argument('--voice', choices=['af_sky', 'af_bella', 'af_heart'])
+    parser.add_argument('--voice', choices=VOICES, help='select and save a bundled voice; clears a custom reference')
+    parser.add_argument('--reference', type=Path, help='prepare and select a clean 6–20 second PCM WAV')
+    parser.add_argument('--clear-reference', action='store_true')
+    parser.add_argument('--output', type=Path, help='save a voice test to WAV instead of playing it')
+    parser.add_argument('--text', default=TEST_TEXT)
     args = parser.parse_args()
     settings = load_config()['voice']
-    if args.download_voice:
-        download_voice()
-    if args.download_model:
-        SpeechToText(settings).load()
-    if args.devices:
-        import sounddevice
-        print(sounddevice.query_devices())
-    if args.test_voice:
-        if args.voice:
-            settings['kokoro_voice'] = args.voice
-        TextToSpeech(settings).speak('Oh, hello. I am a very distinguished little computer. What shall we do today?',
-                                     Event(), lambda: None, lambda: None)
-    if not any((args.download_model, args.download_voice, args.devices, args.test_voice)):
-        parser.print_help()
+    try:
+        if args.voice or args.clear_reference:
+            changes = dict(backend='pocket', reference_voice='')
+            if args.voice:
+                changes['pocket_voice'] = args.voice
+            save_preferences('voice', changes)
+            settings.update(changes)
+        if args.reference:
+            use_reference(args.reference, settings)
+        speaker = TextToSpeech(settings)
+        if args.download_voice:
+            print('Loading local voice (the first download can take a few minutes)...', flush=True)
+            speaker.load()
+            print('Local voice ready.')
+        if args.download_model:
+            SpeechToText(settings).load()
+        if args.devices:
+            import sounddevice
+            print(sounddevice.query_devices())
+        if args.test_voice or args.output:
+            started = monotonic()
+            speaker.load()
+            print(f'Voice loaded in {monotonic()-started:.2f}s. Measuring warm synthesis.', flush=True)
+            if args.output:
+                print(json.dumps(write_audio(speaker, args.text, args.output), indent=2))
+            else:
+                speaker.speak(args.text, Event(), lambda: None, lambda: None)
+        if not any((args.download_model, args.download_voice, args.devices, args.test_voice,
+                    args.voice, args.reference, args.clear_reference, args.output)):
+            parser.print_help()
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f'Voice setup: {exc}', file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

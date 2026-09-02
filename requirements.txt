@@ -1,4 +1,7 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 faster-whisper>=1.1,<2
 sounddevice>=0.5,<0.6
 numpy>=2.0.2,<3
-kokoro-onnx==0.6.1
+# CPU-only build for the MACO: avoid downloading NVIDIA runtimes.
+torch==2.10.0+cpu
+pocket-tts==3.0.2

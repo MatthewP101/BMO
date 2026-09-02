@@ -36,7 +36,12 @@ class BMOAgent:
             memories = get_memories()
             response = 'I remember: ' + ', '.join(memories) if memories else 'Nothing saved yet. Tell me something to remember.'
         else:
-            response = self.llm.generate(message, history=get_recent_history(16), memories=get_memories(),
+            settings = getattr(self.llm, 'settings', {})
+            settings = settings if isinstance(settings, dict) else {}
+            history_count = min(16, max(0, int(settings.get('history_messages', 2))))
+            history = get_recent_history(history_count) if history_count else []
+            memories = get_memories() if settings.get('include_memories', False) else []
+            response = self.llm.generate(message, history=history, memories=memories,
                                          mode=self.last_mode, on_token=on_token, cancel_event=cancel_event)
             if cancel_event is not None and cancel_event.is_set():
                 raise TurnCancelled()

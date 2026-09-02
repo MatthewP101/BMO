@@ -1,12 +1,16 @@
 # BMO
 My BMO Ai local assistant. MY LOYAL SQUIREEEE
 
-## Expressive conversation update
+## Fast local voice update
 
-The current Python app supports streamed Qwen replies, contextual character tone,
-a responsive animated face, a scrollable transcript and local Kokoro neural speech.
-See [installation and controls](docs/EXPRESSIVE_UPDATE.md) before running the update.
-The stock neural voice is not an exact BMO voice clone.
+Kokoro has been replaced by Pocket TTS, with CPU-only dependencies supporting
+Python 3.13 and 3.14. BMO speaks sentences while Qwen continues generating, uses
+less chat context, and keeps a compact, show-inspired personality with serious-task judgment.
+The responsive face and separate scrollable transcript remain.
+
+**[Pull, install, audition voices and prepare a reference voice](docs/FAST_VOICE.md).**
+Bundled voices are starting points; an accurate BMO match still needs a suitable
+reference recording and listening tests. No exact-match claim is made.
 
 # Hardware
 

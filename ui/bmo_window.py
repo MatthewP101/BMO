@@ -397,20 +397,19 @@ class BMOWindow:
         self.button(body, 'Fullscreen / window   F11', self.toggle_fullscreen).pack(fill='x', pady=8)
         tk.Label(body, text='Voice', bg=PANEL, fg=MUTED).pack(anchor='w', pady=(10, 3))
         voice = self.config['voice']
-        backend = tk.StringVar(value=voice.get('backend', 'kokoro'))
-        ttk.Combobox(body, textvariable=backend, values=('kokoro', 'espeak'), state='readonly').pack(fill='x')
-        name = tk.StringVar(value=voice.get('kokoro_voice', 'af_sky'))
-        ttk.Combobox(body, textvariable=name, values=('af_sky', 'af_bella', 'af_heart'), state='readonly').pack(fill='x', pady=5)
-        speed = tk.DoubleVar(value=voice.get('kokoro_speed', .96))
-        pitch = tk.DoubleVar(value=voice.get('pitch_semitones', 0))
-        for label, variable, low, high, resolution in [('Pace', speed, .7, 1.3, .02), ('Pitch (needs ffmpeg)', pitch, -3, 4, .25)]:
-            tk.Scale(body, label=label, variable=variable, from_=low, to=high, resolution=resolution,
-                     orient='horizontal', bg=PANEL, fg=INK, highlightthickness=0).pack(fill='x')
+        backend = tk.StringVar(value=voice.get('backend', 'pocket'))
+        ttk.Combobox(body, textvariable=backend, values=('pocket', 'espeak'), state='readonly').pack(fill='x')
+        name = tk.StringVar(value=voice.get('pocket_voice', 'azelma'))
+        ttk.Combobox(body, textvariable=name, values=('azelma', 'cosette', 'eponine', 'alba', 'fantine'), state='readonly').pack(fill='x', pady=5)
+        reference = tk.StringVar(value=voice.get('reference_voice', ''))
+        tk.Label(body, text='Prepared reference voice (optional)', bg=PANEL, fg=MUTED).pack(anchor='w')
+        tk.Entry(body, textvariable=reference).pack(fill='x', pady=5)
+        self.button(body, 'Use bundled voice', lambda: reference.set('')).pack(fill='x')
         def apply_voice():
             if self.controller.busy:
                 self.show_notice('Finish the current reply before changing the voice.')
                 return
-            changes = dict(backend=backend.get(), kokoro_voice=name.get(), kokoro_speed=speed.get(), pitch_semitones=pitch.get())
+            changes = dict(backend=backend.get(), pocket_voice=name.get(), reference_voice=reference.get().strip())
             try:
                 save_preferences('voice', changes)
                 self.config['voice'].update(changes)
@@ -420,7 +419,15 @@ class BMOWindow:
             except (OSError, ValueError) as exc:
                 self.show_notice(str(exc))
         self.button(body, 'Apply voice', apply_voice, True).pack(fill='x', pady=8)
-        tk.Label(body, text='Kokoro is a natural local voice, not a clone of the show.\nAuto adapts tone; Focus keeps responses practical.\nCtrl+Space: talk / finish. Escape: stop or leave fullscreen.',
+        timings = []
+        for key, label in [('first_token_seconds', 'First text'), ('first_audio_seconds', 'First sound')]:
+            value = self.metrics.get(key)
+            if isinstance(value, (int, float)):
+                timings.append(f'{label}: {value:.2f}s')
+        if timings:
+            tk.Label(body, text='Last reply — ' + ' / '.join(timings), bg=PANEL, fg=MUTED,
+                     wraplength=320).pack(anchor='w', pady=5)
+        tk.Label(body, text='Pocket runs locally. Bundled voices are approximations.\nPrepare a personal reference with python -m app.voice --reference.\nAuto adapts tone; Focus keeps responses practical.\nCtrl+Space: talk / finish. Escape: stop or leave fullscreen.',
                  wraplength=320, justify='left', bg=PANEL, fg=MUTED, font=('DejaVu Sans', 9)).pack(anchor='w', pady=10)
         self.button(body, 'Export visible conversation', self.export_chat).pack(fill='x')
         self.button(body, 'Close settings', window.destroy).pack(fill='x', pady=8)

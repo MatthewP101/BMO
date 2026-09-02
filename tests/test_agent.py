@@ -33,7 +33,8 @@ class TestBMOAgent(unittest.TestCase):
         self.bmo.respond("Explain MyClass in /home/Dirpy/BMO")
         args, kwargs = self.llm.generate.call_args
         self.assertEqual(args[0], "Explain MyClass in /home/Dirpy/BMO")
-        self.assertEqual(kwargs["memories"], ["MyProject lives in /home/Dirpy/BMO"])
+        self.assertEqual(kwargs["memories"], [])
+        self.assertEqual(get_memories(), ["MyProject lives in /home/Dirpy/BMO"])
         self.assertEqual(len(kwargs["history"]), 2)
         self.assertEqual(get_recent_history()[-2][1], args[0])
 

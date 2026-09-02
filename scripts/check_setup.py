@@ -11,13 +11,14 @@ from app.config import ROOT, load_config
 
 def main():
     config = load_config()
-    print(f'Python {sys.version.split()[0]} (neural voice supports 3.10–3.13)')
-    for name in ['tkinter', 'numpy', 'sounddevice', 'faster_whisper', 'kokoro_onnx', 'onnxruntime']:
+    print(f'Python {sys.version.split()[0]} (Pocket TTS supports 3.10–3.14)')
+    for name in ['tkinter', 'numpy', 'sounddevice', 'faster_whisper', 'pocket_tts', 'torch']:
         print(f'{name}: ' + ('installed' if importlib.util.find_spec(name) else 'missing'))
-    for key in ['kokoro_model', 'kokoro_voices']:
-        path = ROOT / config['voice'][key]
-        print(f'{key}: ' + ('present' if path.is_file() else 'missing; python -m app.voice --download-voice'))
-    print('ffmpeg: ' + ('installed' if shutil.which('ffmpeg') else 'missing (only needed for pitch adjustment)'))
+    print('Voice backend: ' + config['voice']['backend'])
+    print('Voice: ' + (config['voice'].get('reference_voice') or config['voice']['pocket_voice']))
+    print('Fast replies: ' + str(config['llm'].get('fast_replies', True)))
+    print('Routine history messages: ' + str(config['llm'].get('history_messages', 2)))
+    print('Voice download check: python -m app.voice --download-voice')
     try:
         url = config['llm']['url'].rstrip('/') + '/api/tags'
         with request.urlopen(url, timeout=5) as response:

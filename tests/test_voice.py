@@ -115,7 +115,9 @@ class TestVoice(unittest.TestCase):
         self.assertEqual(recogniser.transcribe(np.ones(16000, dtype=np.float32)), "hello")
 
     def test_missing_espeak_is_actionable(self):
-        with patch.dict(sys.modules, {"sounddevice": Mock()}), patch("shutil.which", return_value=None):
+        sd = Mock()
+        sd.PortAudioError = type('PortAudioError', (Exception,), {})
+        with patch.dict(sys.modules, {'sounddevice': sd}), patch("shutil.which", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "sudo apt install espeak-ng"):
                 TextToSpeech({"backend": "espeak"}).speak("hello", threading.Event(), Mock(), Mock())
 
