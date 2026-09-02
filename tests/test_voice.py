@@ -25,9 +25,9 @@ class TestVoice(unittest.TestCase):
         recogniser = Mock()
         recogniser.transcribe.return_value = "My Voice"
         speaker = Mock()
-        speaker.speak.side_effect = lambda text, stop, begin, end: (begin(), end())
+        speaker.speak.side_effect = lambda text, stop, begin, end, audio, mode: (begin(), end())
         values = dict(recogniser=recogniser, speaker=speaker,
-                      recorder=lambda stop, settings, ready: (ready(), np.ones(16000))[1])
+                      recorder=lambda stop, settings, ready, level: (ready(), np.ones(16000))[1])
         values.update(kwargs)
         return VoiceController(agent, {}, **values)
 
@@ -36,8 +36,8 @@ class TestVoice(unittest.TestCase):
         self.assertTrue(c.start())
         events = collect(c)
         states = [v for k, v in events if k == "state"]
-        self.assertEqual(states, ["Preparing microphone", "Listening", "Transcribing", "Thinking", "Preparing voice", "Speaking", "Finishing", "Ready"])
-        c.agent.respond.assert_called_once_with("My Voice")
+        self.assertEqual(states, ["Preparing microphone", "Listening", "Transcribing", "Thinking", "Preparing voice", "Speaking", "Preparing voice", "Ready"])
+        self.assertEqual(c.agent.respond.call_args.args[0], "My Voice")
         self.assertLess(events.index(("reply", "Hello!")), events.index(("state", "Speaking")))
 
     def test_muted_text_has_no_microphone_or_speech(self):
@@ -71,7 +71,7 @@ class TestVoice(unittest.TestCase):
     def test_single_turn_and_close_while_listening(self):
         entered = threading.Event()
         finished = threading.Event()
-        def record(stop, settings, ready):
+        def record(stop, settings, ready, level):
             ready()
             entered.set()
             stop.wait(2)
@@ -89,7 +89,7 @@ class TestVoice(unittest.TestCase):
     def test_stop_voice_does_not_stop_response(self):
         c = self.controller()
         entered, release = threading.Event(), threading.Event()
-        def respond(message):
+        def respond(message, **kwargs):
             entered.set()
             release.wait(2)
             return "Finished"
@@ -117,7 +117,7 @@ class TestVoice(unittest.TestCase):
     def test_missing_espeak_is_actionable(self):
         with patch.dict(sys.modules, {"sounddevice": Mock()}), patch("shutil.which", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "sudo apt install espeak-ng"):
-                TextToSpeech({}).speak("hello", threading.Event(), Mock(), Mock())
+                TextToSpeech({"backend": "espeak"}).speak("hello", threading.Event(), Mock(), Mock())
 
 class TestAudioLifecycle(unittest.TestCase):
     def test_speech_passes_text_as_data_and_brackets_playback(self):
@@ -126,9 +126,9 @@ class TestAudioLifecycle(unittest.TestCase):
         order = []
         sd = MagicMock()
         sd.PortAudioError = type('PortAudioError', (Exception,), {})
-        stream = sd.RawOutputStream.return_value.__enter__.return_value
+        stream = sd.OutputStream.return_value.__enter__.return_value
         stream.write.side_effect = lambda block: order.append('write')
-        stream.stop.side_effect = lambda: order.append('drained')
+        sd.OutputStream.return_value.__exit__.side_effect = lambda *args: order.append('drained')
         malicious_text = 'Hello; $(touch /tmp/should-not-exist) --help'
         def synthesise(args, **kwargs):
             self.assertEqual(kwargs['input'], malicious_text)
@@ -141,7 +141,7 @@ class TestAudioLifecycle(unittest.TestCase):
                 wav.setframerate(22050)
                 wav.writeframes(b'\x01\x00' * 2500)
         with patch.dict(sys.modules, {'sounddevice': sd}), patch('shutil.which', return_value='/usr/bin/espeak-ng'), patch('subprocess.run', side_effect=synthesise):
-            TextToSpeech({}).speak(malicious_text, threading.Event(),
+            TextToSpeech({"backend": "espeak"}).speak(malicious_text, threading.Event(),
                                   lambda: order.append('start'), lambda: order.append('end'))
         self.assertEqual(order[0], 'start')
         self.assertEqual(order[-2:], ['drained', 'end'])
@@ -152,7 +152,7 @@ class TestAudioLifecycle(unittest.TestCase):
         stop = threading.Event()
         sd = MagicMock()
         sd.PortAudioError = type('PortAudioError', (Exception,), {})
-        stream = sd.RawOutputStream.return_value.__enter__.return_value
+        stream = sd.OutputStream.return_value.__enter__.return_value
         stream.write.side_effect = lambda block: stop.set()
         def synthesise(args, **kwargs):
             with wave.open(args[args.index('-w') + 1], 'wb') as wav:
@@ -162,7 +162,7 @@ class TestAudioLifecycle(unittest.TestCase):
                 wav.writeframes(b'\x01\x00' * 5000)
         ended = Mock()
         with patch.dict(sys.modules, {'sounddevice': sd}), patch('shutil.which', return_value='/usr/bin/espeak-ng'), patch('subprocess.run', side_effect=synthesise):
-            TextToSpeech({}).speak('hello', stop, Mock(), ended)
+            TextToSpeech({"backend": "espeak"}).speak('hello', stop, Mock(), ended)
         stream.write.assert_called_once()
         stream.abort.assert_called_once()
         ended.assert_called_once()

@@ -1,3 +1,8 @@
+# First voice prototype (historical)
+
+For the current version, follow [Expressive BMO update](EXPRESSIVE_UPDATE.md).
+The instructions below describe the earlier eSpeak prototype.
+
 # BMO voice — first local version
 
 This patch adds local conversation, click-to-record microphone input and spoken replies to the existing Python/Tkinter face. It targets MatthewP101/BMO main tree `4a904d4cd4d9f1aac7f31517198f9758ba1cc878`. No GitHub branch or remote files were changed to produce it.

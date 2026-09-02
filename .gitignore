@@ -23,3 +23,7 @@ Thumbs.db
 # personal configuration and downloaded speech models
 config/config.json
 models/whisper/
+
+# neural voice models and temporary configuration
+models/kokoro/
+config/config.json.tmp

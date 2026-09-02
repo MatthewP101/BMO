@@ -1,6 +1,13 @@
 # BMO
 My BMO Ai local assistant. MY LOYAL SQUIREEEE
 
+## Expressive conversation update
+
+The current Python app supports streamed Qwen replies, contextual character tone,
+a responsive animated face, a scrollable transcript and local Kokoro neural speech.
+See [installation and controls](docs/EXPRESSIVE_UPDATE.md) before running the update.
+The stock neural voice is not an exact BMO voice clone.
+
 # Hardware
 
 # Mini PC — AOOSTAR MACO
@@ -49,7 +56,7 @@ can be rotated into landscape mode in software, despite being portrait by defaul
 
 Potential Software
 
-Whisper - Text to speech
+Whisper - Speech to text (hearing)
 
 Qwen3.5 - Main LLm
 

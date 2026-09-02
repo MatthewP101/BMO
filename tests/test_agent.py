@@ -19,14 +19,14 @@ class TestBMOAgent(unittest.TestCase):
         self.bmo = BMOAgent(llm=self.llm)
 
     def test_greeting(self):
-        self.assertEqual(self.bmo.respond("hello"), "Hello, my loyal squire!")
-        self.llm.generate.assert_not_called()
+        self.assertEqual(self.bmo.respond("hello"), "Hello from the model.")
+        self.llm.generate.assert_called_once()
 
     def test_name(self):
-        self.assertEqual(self.bmo.respond("what is your name"), "I am BMO!")
+        self.assertEqual(self.bmo.respond("what is your name"), "Hello from the model.")
 
     def test_status(self):
-        self.assertEqual(self.bmo.respond("how are you"), "BMO is doing great!")
+        self.assertEqual(self.bmo.respond("how are you"), "Hello from the model.")
 
     def test_case_and_context_survive(self):
         self.bmo.respond("Remember MyProject lives in /home/Dirpy/BMO")
@@ -53,7 +53,7 @@ class TestBMOAgent(unittest.TestCase):
         self.assertIn("Capital Letters", restarted.respond("what do you remember"))
 
     def test_blank_and_oversized_input_rejected(self):
-        for message in ("  ", "x" * 2001):
+        for message in ("  ", "x" * 12001):
             with self.assertRaises(ValueError):
                 self.bmo.respond(message)
         self.assertEqual(get_recent_history(), [])

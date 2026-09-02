@@ -1,862 +1,444 @@
-import math
-import random
+import time
 import tkinter as tk
+from tkinter import filedialog, ttk
 from queue import Empty
 
-from app.config import load_config
+from app.config import load_config, save_preferences
+from app.memory.history import get_recent_history
 from app.voice.controller import VoiceController
+from ui.face import FACE_COLOUR, INK, FaceRenderer, layout_for
+
+BG = '#153e37'
+PANEL = '#edf2df'
+MUTED = '#5b7361'
+ACCENT = '#f2c65c'
 
 
 class BMOWindow:
-    FACE_COLOUR = "#68c9b8"
-    BLUSH_COLOUR = "#ef8f9c"
-
-    BLINK_INTERVAL = 20000
-    EXPRESSION_INTERVAL = 120000
-    CHATS_PER_EXPRESSION = 3
-
-    def __init__(self, bmo):
+    def __init__(self, bmo, controller=None, root=None):
         self.bmo = bmo
-        self.controller = VoiceController(bmo, load_config()["voice"])
-        self.voice_state = "Ready"
+        self.config = load_config()
+        self.controller = controller or VoiceController(bmo, self.config['voice'])
+        self.root = root or tk.Tk()
+        self.root.title('BMO')
+        self.root.configure(bg=BG)
+        screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        width, height = min(1200, max(320, screen_w - 40)), max(300, screen_h - 80) if screen_w < 900 else min(900, max(300, screen_h - 80))
+        self.root.geometry(f'{width}x{height}+{max(0, (screen_w-width)//2)}+{max(0, (screen_h-height)//2)}')
+        self.root.minsize(min(360, screen_w), min(300, screen_h))
+        self.root.protocol('WM_DELETE_WINDOW', self.close)
         self.closed = False
-        self.poll_timer = None
-        self.talk_timer = None
-
-        # -----------------------------
-        # face state
-        # -----------------------------
-
-        self.current_expression = "normal"
-
-        self.expressions = [
-            "normal",
-            "happy",
-            "blushing",
-            "sad",
-            "sleepy",
-            "angry",
-            "surprised",
-            "curious",
-            "confused",
-        ]
-
-        self.is_blinking = False
-        self.is_talking = False
-        self.chat_count = 0
-
-        # subtle idle movement
-        self.eye_offset_x = 0
-        self.eye_offset_y = 0
-        self.face_offset_y = 0
-
-        self.target_eye_x = 0
-        self.target_eye_y = 0
-
-        self.idle_time = 0
-
-        # timers
-        self.expression_timer = None
-        self.blink_timer = None
-
-        # -----------------------------
-        # window
-        # -----------------------------
-
-        self.root = tk.Tk()
-        self.root.title("BMO")
-        self.root.geometry("900x650")
-        self.root.minsize(700, 550)
-        self.root.protocol("WM_DELETE_WINDOW", self.close)
-
-        # -----------------------------
-        # face
-        # -----------------------------
-
-        self.face = tk.Canvas(
-            self.root,
-            bg=self.FACE_COLOUR,
-            highlightthickness=0,
-        )
-
-        self.face.pack(
-            fill="both",
-            expand=True,
-        )
-
-        # -----------------------------
-        # response
-        # -----------------------------
-
-        self.response_label = tk.Label(
-            self.root,
-            text="BMO: Hello, my loyal squire!",
-            anchor="w",
-            padx=12,
-            pady=8,
-        )
-
-        self.response_label.configure(wraplength=850, justify="left")
-        self.response_label.pack(fill="x")
-        self.root.bind("<Configure>", self.resize_labels)
-
-        self.heard_label = tk.Label(self.root, text="", anchor="w", padx=12)
-        self.heard_label.pack(fill="x")
-        self.status_label = tk.Label(self.root, text="Ready — click Talk to record", anchor="w", padx=12)
-        self.status_label.pack(fill="x")
-        self.error_label = tk.Label(self.root, text="", fg="#a02020", anchor="w", padx=12,
-                                    wraplength=850, justify="left")
-        self.error_label.pack(fill="x")
-
-        # -----------------------------
-        # chat
-        # -----------------------------
-
-        self.chat_frame = tk.Frame(self.root)
-
-        self.chat_frame.pack(
-            fill="x",
-            padx=10,
-            pady=10,
-        )
-
-        self.entry = tk.Entry(
-            self.chat_frame,
-            font=("Arial", 14),
-        )
-
-        self.entry.pack(
-            side="left",
-            fill="x",
-            expand=True,
-            padx=(0, 10),
-        )
-
-        self.send_button = tk.Button(
-            self.chat_frame,
-            text="Send",
-            command=self.send_message,
-        )
-
-        self.send_button.pack(side="right")
-
-        self.entry.bind(
-            "<Return>",
-            self.send_message,
-        )
-
-        self.voice_frame = tk.Frame(self.root)
-        self.voice_frame.pack(fill="x", padx=10, pady=(0, 10))
-        self.talk_button = tk.Button(self.voice_frame, text="Talk", command=self.toggle_recording)
-        self.talk_button.pack(side="left")
-        self.stop_voice_button = tk.Button(self.voice_frame, text="Stop voice", state="disabled",
-                                           command=self.controller.stop_speaking)
-        self.stop_voice_button.pack(side="left", padx=10)
-        self.speak_replies = tk.BooleanVar(value=True)
-        tk.Checkbutton(self.voice_frame, text="Speak replies", variable=self.speak_replies).pack(side="left")
-        self.entry.focus()
+        self.poll_timer = self.draw_timer = self.layout_timer = None
+        self.voice_state = 'Ready'
+        self.reply_open = False
+        self.reply_start = None
+        self.last_reply = ''
+        self.metrics = {}
+        self.streaming_reply = ''
+        self.unread = False
+        self.settings_window = None
+        self.started = time.monotonic()
+        ui = self.config['ui']
+        self.mode = tk.StringVar(value=ui.get('mode', 'auto'))
+        self.speak_replies = tk.BooleanVar(value=ui.get('speak_replies', True))
+        self.face_only = tk.BooleanVar(value=ui.get('face_only', False))
+        self.fullscreen = tk.BooleanVar(value=ui.get('fullscreen', False))
+        self.reduced_motion = tk.BooleanVar(value=ui.get('reduced_motion', False))
+        self.font_size = max(10, min(20, int(ui.get('font_size', 12))))
+        self.fps = max(15, min(60, int(ui.get('fps', 40))))
+        self._build()
+        self.root.bind('<Configure>', self.schedule_layout)
+        self.root.bind('<F11>', self.toggle_fullscreen)
+        self.root.bind('<Escape>', self.escape)
+        self.root.bind('<Control-l>', lambda event: self.entry.focus_set())
+        self.root.bind('<Control-space>', self.toggle_recording)
+        self.root.bind('<Control-period>', lambda event: self.controller.stop())
+        self.root.attributes('-fullscreen', self.fullscreen.get())
+        self.root.after_idle(self.relayout)
+        self.animate()
         self.poll_events()
+        self.entry.focus_set()
 
-        # -----------------------------
-        # startup
-        # -----------------------------
+    def button(self, parent, text, command, accent=False):
+        return tk.Button(parent, text=text, command=command, bg=ACCENT if accent else '#d7e5c9',
+                         fg=INK, activebackground='#c4dcb7', activeforeground=INK,
+                         relief='flat', bd=0, padx=10, pady=7, cursor='hand2',
+                         font=('DejaVu Sans', 10), highlightthickness=0)
 
-        self.draw_face()
-
-        self.schedule_blink()
-        self.schedule_expression_change()
-
-        self.animate_idle()
-        self.schedule_eye_target()
-
-    # ==================================================
-    # rendering
-    # ==================================================
-
-    def clear_face(self):
-        self.face.delete("expression")
-
-    def draw_face(self):
-        self.clear_face()
-
-        offset_y = self.face_offset_y
-
-        self.draw_expression_features(offset_y)
-
-        if self.is_blinking:
-            self.draw_closed_eyes(offset_y)
+    def _build(self):
+        self.header = tk.Frame(self.root, bg=BG)
+        self.header.place(x=12, y=8, relwidth=1, width=-24, height=36)
+        tk.Label(self.header, text='BMO', bg=BG, fg=PANEL,
+                 font=('DejaVu Sans', 16, 'bold')).pack(side='left')
+        self.status = tk.Label(self.header, text='Ready', bg=BG, fg='#afc6a9', font=('DejaVu Sans', 10))
+        self.status.pack(side='left', padx=14)
+        self.settings_button = self.button(self.header, 'Settings', self.open_settings)
+        self.settings_button.pack(side='right')
+        self.view_button = self.button(self.header, 'Face', self.toggle_face)
+        self.view_button.pack(side='right', padx=5)
+        self.face_panel = tk.Frame(self.root, bg=FACE_COLOUR)
+        self.face = tk.Canvas(self.face_panel, bg=FACE_COLOUR, highlightthickness=0)
+        self.face.pack(fill='both', expand=True)
+        self.renderer = FaceRenderer(self.face)
+        self.face.bind('<Motion>', self.look_at)
+        self.face.bind('<Button-1>', self.face_tap)
+        self.face_hint = tk.Label(self.face_panel, text='Here with you.', bg=FACE_COLOUR,
+                                  fg=MUTED, font=('DejaVu Sans', 10))
+        self.face_hint.place(relx=.5, rely=.95, anchor='s')
+        self.face_talk = self.button(self.face_panel, 'Talk', self.toggle_recording, True)
+        self.conversation = tk.Frame(self.root, bg=PANEL)
+        self.conversation.grid_columnconfigure(0, weight=1)
+        self.conversation.grid_rowconfigure(1, weight=1)
+        top = tk.Frame(self.conversation, bg=PANEL)
+        self.conversation_header = top
+        top.grid(row=0, column=0, sticky='ew', padx=12, pady=(10, 3))
+        tk.Label(top, text='OUR CONVERSATION', bg=PANEL, fg=MUTED,
+                 font=('DejaVu Sans', 9, 'bold')).pack(side='left')
+        self.copy_button = self.button(top, 'Copy', self.copy_reply)
+        self.copy_button.pack(side='right')
+        self.transcript_frame = tk.Frame(self.conversation, bg=PANEL)
+        self.transcript_frame.grid(row=1, column=0, sticky='nsew', padx=12, pady=4)
+        self.transcript = tk.Text(self.transcript_frame, wrap='word', height=1, width=1,
+                                  font=('DejaVu Sans', self.font_size), bg=PANEL, fg=INK,
+                                  relief='flat', bd=0, padx=2, pady=5, spacing3=6,
+                                  insertbackground=INK, selectbackground='#c0d8ad', state='disabled')
+        scrollbar = ttk.Scrollbar(self.transcript_frame, orient='vertical', command=self.transcript.yview)
+        self.transcript.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side='right', fill='y')
+        self.transcript.pack(side='left', fill='both', expand=True)
+        self.transcript.tag_configure('role', foreground=MUTED, font=('DejaVu Sans', 9, 'bold'), spacing1=12)
+        self.transcript.tag_configure('notice', foreground='#805127', font=('DejaVu Sans', 10))
+        self.transcript.tag_configure('code', background='#e0e8d3', font=('DejaVu Sans Mono', max(10, self.font_size - 1)))
+        self.notice = tk.Label(self.conversation, text='', bg=PANEL, fg='#805127',
+                               justify='left', anchor='w', font=('DejaVu Sans', 9))
+        self.notice.grid(row=2, column=0, sticky='ew', padx=12)
+        compose = tk.Frame(self.conversation, bg='#d8e4cb')
+        compose.grid(row=3, column=0, sticky='ew', padx=12, pady=(4, 6))
+        compose.grid_columnconfigure(0, weight=1)
+        self.entry = tk.Text(compose, height=2, width=1, wrap='word', font=('DejaVu Sans', self.font_size),
+                             bg='#f9faef', fg=INK, relief='flat', padx=8, pady=8, undo=True)
+        self.entry.grid(row=0, column=0, sticky='ew')
+        self.entry.bind('<Return>', self.send_message)
+        self.entry.bind('<Shift-Return>', lambda event: None)
+        self.send_button = self.button(compose, 'Send', self.send_message, True)
+        self.send_button.grid(row=0, column=1, sticky='ns')
+        controls = tk.Frame(self.conversation, bg=PANEL)
+        controls.grid(row=4, column=0, sticky='ew', padx=12, pady=(0, 10))
+        self.talk_button = self.button(controls, 'Talk', self.toggle_recording, True)
+        self.talk_button.pack(side='left')
+        self.stop_button = self.button(controls, 'Stop', self.controller.stop)
+        self.stop_button.pack(side='left', padx=4)
+        self.stop_button.configure(state='disabled')
+        self.mode_box = ttk.Combobox(controls, textvariable=self.mode,
+                                     values=('auto', 'focus', 'play'), state='readonly', width=7)
+        self.mode_box.pack(side='right')
+        self.mode_box.bind('<<ComboboxSelected>>', lambda event: self.persist())
+        history = get_recent_history(12)
+        if history:
+            for role, content in history:
+                self.add_message('YOU' if role == 'user' else 'BMO', content)
+                if role == 'assistant':
+                    self.last_reply = content
         else:
-            self.draw_eyes(offset_y)
+            self.add_notice('Tap Talk, or write a message. Shift+Enter adds a new line.')
 
-        if self.is_talking:
-            self.draw_talking_mouth(offset_y)
-        else:
-            self.draw_expression_mouth(offset_y)
+    def persist(self):
+        try:
+            save_preferences('ui', {'mode': self.mode.get(), 'speak_replies': self.speak_replies.get(),
+                                     'face_only': self.face_only.get(), 'fullscreen': self.fullscreen.get(),
+                                     'reduced_motion': self.reduced_motion.get()})
+        except (OSError, ValueError) as exc:
+            self.show_notice(f'Could not save preferences: {exc}')
 
-    # ==================================================
-    # eyes
-    # ==================================================
-
-    def draw_eyes(self, offset_y):
-        x = self.eye_offset_x
-        y = self.eye_offset_y + offset_y
-
-        if self.current_expression == "sleepy":
-            self.face.create_line(
-                265 + x,
-                155 + y,
-                315 + x,
-                155 + y,
-                width=7,
-                capstyle="round",
-                tags="expression",
-            )
-
-            self.face.create_line(
-                585 + x,
-                155 + y,
-                635 + x,
-                155 + y,
-                width=7,
-                capstyle="round",
-                tags="expression",
-            )
-
+    def schedule_layout(self, event):
+        if event.widget is not self.root or self.closed:
             return
+        if self.layout_timer is not None:
+            self.root.after_cancel(self.layout_timer)
+        self.layout_timer = self.root.after(60, self.relayout)
 
-        if self.current_expression == "surprised":
-            size = 60
-            left = (260, 120)
-            right = (580, 120)
-
+    def relayout(self):
+        self.layout_timer = None
+        layout = layout_for(self.root.winfo_width(), self.root.winfo_height(), self.face_only.get())
+        x, y, width, height = layout.face
+        self.face_panel.place(x=x, y=y, width=width, height=height)
+        if self.face_only.get():
+            self.conversation.place_forget()
+            self.face_talk.place(relx=.5, rely=1., y=-16, anchor='s')
+            self.face_hint.place_forget()
         else:
-            size = 40
-            left = (270, 130)
-            right = (590, 130)
+            x, y, width, height = layout.conversation
+            self.conversation.place(x=x, y=y, width=width, height=height)
+            self.face_talk.place_forget()
+            self.face_hint.place(relx=.5, rely=.95, anchor='s')
+            self.notice.configure(wraplength=max(100, width - 28))
+            self.entry.configure(height=1 if height < 300 else 2)
+            if height < 260:
+                self.conversation_header.grid_remove()
+                self.notice.grid_remove()
+            else:
+                self.conversation_header.grid()
+                self.notice.grid()
+        self.view_button.configure(text='Chat' if self.face_only.get() else 'Face')
+        self.settings_button.configure(text='⋯' if self.root.winfo_width() < 450 else 'Settings')
 
-        self.face.create_oval(
-            left[0] + x,
-            left[1] + y,
-            left[0] + size + x,
-            left[1] + size + y,
-            fill="black",
-            outline="black",
-            tags="expression",
-        )
+    def toggle_face(self):
+        self.face_only.set(not self.face_only.get())
+        self.unread = False
+        self.relayout()
+        self.persist()
 
-        self.face.create_oval(
-            right[0] + x,
-            right[1] + y,
-            right[0] + size + x,
-            right[1] + size + y,
-            fill="black",
-            outline="black",
-            tags="expression",
-        )
+    def toggle_fullscreen(self, event=None):
+        self.fullscreen.set(not self.fullscreen.get())
+        self.root.attributes('-fullscreen', self.fullscreen.get())
+        self.persist()
+        return 'break'
 
-    def draw_closed_eyes(self, offset_y):
-        y = offset_y
+    def escape(self, event=None):
+        if self.controller.busy:
+            self.controller.stop()
+        elif self.fullscreen.get():
+            self.toggle_fullscreen()
+        elif self.face_only.get():
+            self.toggle_face()
+        return 'break'
 
-        # slightly different blink depending on mood
-        if self.current_expression in ["happy", "blushing"]:
-            self.face.create_arc(
-                260,
-                135 + y,
-                320,
-                175 + y,
-                start=200,
-                extent=140,
-                style="arc",
-                width=6,
-                tags="expression",
-            )
+    def look_at(self, event):
+        width, height = max(1, self.face.winfo_width()), max(1, self.face.winfo_height())
+        self.renderer.motion.look_at(event.x / width * 2 - 1, event.y / height * 2 - 1, time.monotonic() - self.started)
 
-            self.face.create_arc(
-                580,
-                135 + y,
-                640,
-                175 + y,
-                start=200,
-                extent=140,
-                style="arc",
-                width=6,
-                tags="expression",
-            )
+    def face_tap(self, event):
+        if not self.controller.busy:
+            self.renderer.motion.set_expression('warm', time.monotonic() - self.started)
 
-        else:
-            self.face.create_line(
-                265,
-                155 + y,
-                315,
-                155 + y,
-                width=7,
-                capstyle="round",
-                tags="expression",
-            )
-
-            self.face.create_line(
-                585,
-                155 + y,
-                635,
-                155 + y,
-                width=7,
-                capstyle="round",
-                tags="expression",
-            )
-
-    # ==================================================
-    # expression details
-    # ==================================================
-
-    def draw_expression_features(self, offset_y):
-        expression = self.current_expression
-        y = offset_y
-
-        # -----------------------------
-        # blush
-        # -----------------------------
-
-        if expression == "blushing":
-            self.face.create_oval(
-                205,
-                185 + y,
-                285,
-                225 + y,
-                fill=self.BLUSH_COLOUR,
-                outline="",
-                tags="expression",
-            )
-
-            self.face.create_oval(
-                615,
-                185 + y,
-                695,
-                225 + y,
-                fill=self.BLUSH_COLOUR,
-                outline="",
-                tags="expression",
-            )
-
-        # -----------------------------
-        # sad eyebrows
-        # -----------------------------
-
-        if expression == "sad":
-            self.face.create_line(
-                255,
-                125 + y,
-                310,
-                140 + y,
-                width=5,
-                capstyle="round",
-                tags="expression",
-            )
-
-            self.face.create_line(
-                590,
-                140 + y,
-                645,
-                125 + y,
-                width=5,
-                capstyle="round",
-                tags="expression",
-            )
-
-        # -----------------------------
-        # angry eyebrows
-        # -----------------------------
-
-        elif expression == "angry":
-            self.face.create_line(
-                255,
-                115 + y,
-                315,
-                140 + y,
-                width=7,
-                capstyle="round",
-                tags="expression",
-            )
-
-            self.face.create_line(
-                585,
-                140 + y,
-                645,
-                115 + y,
-                width=7,
-                capstyle="round",
-                tags="expression",
-            )
-
-        # -----------------------------
-        # curious eyebrow
-        # -----------------------------
-
-        elif expression == "curious":
-            self.face.create_line(
-                255,
-                120 + y,
-                310,
-                115 + y,
-                width=5,
-                capstyle="round",
-                tags="expression",
-            )
-
-            self.face.create_line(
-                590,
-                125 + y,
-                645,
-                140 + y,
-                width=5,
-                capstyle="round",
-                tags="expression",
-            )
-
-        # -----------------------------
-        # confused eyebrows
-        # -----------------------------
-
-        elif expression == "confused":
-            self.face.create_line(
-                255,
-                140 + y,
-                310,
-                120 + y,
-                width=5,
-                capstyle="round",
-                tags="expression",
-            )
-
-            self.face.create_line(
-                590,
-                120 + y,
-                645,
-                135 + y,
-                width=5,
-                capstyle="round",
-                tags="expression",
-            )
-
-        # -----------------------------
-        # sleepy Zs
-        # -----------------------------
-
-        elif expression == "sleepy":
-            self.face.create_text(
-                680,
-                105 + y,
-                text="z",
-                font=("Arial", 18, "bold"),
-                tags="expression",
-            )
-
-            self.face.create_text(
-                710,
-                75 + y,
-                text="Z",
-                font=("Arial", 25, "bold"),
-                tags="expression",
-            )
-
-    # ==================================================
-    # mouths
-    # ==================================================
-
-    def draw_expression_mouth(self, offset_y):
-        expression = self.current_expression
-        y = offset_y
-
-        if expression in ["normal", "blushing"]:
-            self.draw_smile(y)
-
-        elif expression == "happy":
-            self.face.create_arc(
-                400,
-                170 + y,
-                500,
-                255 + y,
-                start=200,
-                extent=140,
-                style="arc",
-                width=7,
-                tags="expression",
-            )
-
-        elif expression == "sad":
-            self.face.create_arc(
-                410,
-                215 + y,
-                490,
-                275 + y,
-                start=20,
-                extent=140,
-                style="arc",
-                width=6,
-                tags="expression",
-            )
-
-        elif expression == "sleepy":
-            self.face.create_oval(
-                435,
-                205 + y,
-                465,
-                225 + y,
-                fill="black",
-                outline="black",
-                tags="expression",
-            )
-
-        elif expression == "angry":
-            self.face.create_line(
-                420,
-                235 + y,
-                480,
-                235 + y,
-                width=7,
-                capstyle="round",
-                tags="expression",
-            )
-
-        elif expression == "surprised":
-            self.face.create_oval(
-                425,
-                195 + y,
-                475,
-                250 + y,
-                fill="black",
-                outline="black",
-                tags="expression",
-            )
-
-        elif expression == "curious":
-            self.face.create_arc(
-                420,
-                195 + y,
-                480,
-                245 + y,
-                start=205,
-                extent=105,
-                style="arc",
-                width=5,
-                tags="expression",
-            )
-
-        elif expression == "confused":
-            self.face.create_line(
-                420,
-                230 + y,
-                440,
-                225 + y,
-                460,
-                235 + y,
-                480,
-                228 + y,
-                width=5,
-                smooth=True,
-                tags="expression",
-            )
-
-    def draw_smile(self, y):
-        self.face.create_arc(
-            410,
-            180 + y,
-            490,
-            250 + y,
-            start=200,
-            extent=140,
-            style="arc",
-            width=6,
-            tags="expression",
-        )
-
-    def draw_talking_mouth(self, offset_y):
-        y = offset_y
-
-        # preserve the expression around the mouth
-        # while only changing the mouth itself
-
-        if self.current_expression == "angry":
-            self.face.create_oval(
-                425,
-                205 + y,
-                475,
-                240 + y,
-                fill="black",
-                outline="black",
-                tags="expression",
-            )
-
-        elif self.current_expression == "sad":
-            self.face.create_oval(
-                430,
-                205 + y,
-                470,
-                242 + y,
-                fill="black",
-                outline="black",
-                tags="expression",
-            )
-
-        else:
-            self.face.create_oval(
-                425,
-                195 + y,
-                475,
-                245 + y,
-                fill="black",
-                outline="black",
-                tags="expression",
-            )
-
-        # tiny lower lip line
-        self.face.create_arc(
-            435,
-            225 + y,
-            465,
-            250 + y,
-            start=200,
-            extent=140,
-            style="arc",
-            width=2,
-            fill=self.FACE_COLOUR,
-            tags="expression",
-        )
-
-    # ==================================================
-    # blinking
-    # ==================================================
-
-    def blink(self):
-        if self.is_blinking:
+    def animate(self):
+        if self.closed:
             return
+        self.renderer.motion.reduced = self.reduced_motion.get()
+        self.renderer.draw(time.monotonic() - self.started)
+        interval = 250 if self.root.state() == 'iconic' else round(1000 / (min(20, self.fps) if self.voice_state == 'Ready' else self.fps))
+        self.draw_timer = self.root.after(interval, self.animate)
 
-        self.is_blinking = True
-        self.draw_face()
+    def insert(self, text, tag=None):
+        bottom = self.transcript.yview()[1] >= .98
+        self.transcript.configure(state='normal')
+        self.transcript.insert('end', text, tag or ())
+        self.transcript.configure(state='disabled')
+        if bottom:
+            self.transcript.see('end')
 
-        self.root.after(
-            160,
-            self.finish_blink,
-        )
+    def add_message(self, role, text):
+        self.insert(role + '\n', 'role')
+        self.insert(text + '\n\n')
+        self.trim_transcript()
 
-    def finish_blink(self):
-        self.is_blinking = False
-        self.draw_face()
+    def add_notice(self, text):
+        self.insert(text + '\n\n', 'notice')
 
-        self.schedule_blink()
+    def trim_transcript(self):
+        # bound only the visible widget; persistent history is untouched
+        if int(self.transcript.index('end-1c').split('.')[0]) > 2500:
+            self.transcript.configure(state='normal')
+            self.transcript.delete('1.0', '600.0')
+            self.transcript.configure(state='disabled')
 
-    def schedule_blink(self):
-        if self.blink_timer is not None:
-            self.root.after_cancel(self.blink_timer)
-
-        self.blink_timer = self.root.after(
-            self.BLINK_INTERVAL,
-            self.blink,
-        )
-
-    # ==================================================
-    # idle eye movement
-    # ==================================================
-
-    def schedule_eye_target(self):
-        self.target_eye_x = random.randint(-4, 4)
-        self.target_eye_y = random.randint(-2, 2)
-
-        self.root.after(
-            random.randint(2500, 5000),
-            self.schedule_eye_target,
-        )
-
-    def animate_idle(self):
-        self.idle_time += 0.05
-
-        # smooth eye movement
-        self.eye_offset_x += (
-            self.target_eye_x - self.eye_offset_x
-        ) * 0.08
-
-        self.eye_offset_y += (
-            self.target_eye_y - self.eye_offset_y
-        ) * 0.08
-
-        # very small breathing / floating movement
-        self.face_offset_y = math.sin(
-            self.idle_time
-        ) * 1.5
-
-        self.draw_face()
-
-        self.root.after(
-            50,
-            self.animate_idle,
-        )
-
-    # ==================================================
-    # expressions
-    # ==================================================
-
-    def choose_new_expression(self):
-        choices = [
-            expression
-            for expression in self.expressions
-            if expression != self.current_expression
-        ]
-
-        return random.choice(choices)
-
-    def change_expression(self):
-        new_expression = self.choose_new_expression()
-
-        self.transition_expression(new_expression)
-
-        self.schedule_expression_change()
-
-    def transition_expression(self, new_expression):
-        # tkinter canvas does not support real alpha,
-        # so this creates a short soft transition instead
-
-        overlay = self.face.create_rectangle(
-            0,
-            0,
-            self.face.winfo_width(),
-            self.face.winfo_height(),
-            fill=self.FACE_COLOUR,
-            outline="",
-            stipple="gray50",
-        )
-
-        def swap():
-            self.current_expression = new_expression
-
-            self.face.delete(overlay)
-
-            self.draw_face()
-
-        self.root.after(
-            100,
-            swap,
-        )
-
-    def schedule_expression_change(self):
-        if self.expression_timer is not None:
-            self.root.after_cancel(
-                self.expression_timer
-            )
-
-        self.expression_timer = self.root.after(
-            self.EXPRESSION_INTERVAL,
-            self.change_expression,
-        )
-
-    # ==================================================
-    # talking
-    # ==================================================
-
-    def start_talking(self):
-        self.is_talking = True
-        self.draw_face()
-
-    def stop_talking(self):
-        self.is_talking = False
-        self.draw_face()
-
-    # ==================================================
-    # chat
-    # ==================================================
-
-    def resize_labels(self, event):
-        if event.widget is self.root:
-            width = max(300, event.width - 24)
-            self.response_label.configure(wraplength=width)
-            if hasattr(self, "error_label"):
-                self.error_label.configure(wraplength=width)
-
-    def begin_turn(self, message=None):
-        if self.controller.start(message, speak=self.speak_replies.get()):
-            self.error_label.config(text="")
-            self.set_voice_state("Starting")
-            return True
-        return False
+    def show_notice(self, text):
+        self.notice.configure(text=text[:220])
+        if text:
+            self.add_notice(text)
 
     def send_message(self, event=None):
-        message = self.entry.get().strip()
-        if not message or self.controller.busy:
-            return
-        if message.casefold() == "exit":
-            self.close()
-            return
-        if self.begin_turn(message):
-            self.entry.delete(0, tk.END)
+        if event is not None and event.state & 0x0001:
+            return None
+        message = self.entry.get('1.0', 'end-1c').strip()
+        if not message:
+            return 'break'
+        if self.controller.start(message, self.speak_replies.get(), self.mode.get()):
+            self.entry.delete('1.0', 'end')
+            self.notice.configure(text='')
+            self.update_controls(True)
+        return 'break'
 
-    def toggle_recording(self):
-        if self.voice_state == "Listening":
+    def toggle_recording(self, event=None):
+        if self.voice_state == 'Listening':
             self.controller.stop_recording()
-            self.talk_button.config(state="disabled")
         elif not self.controller.busy:
-            self.begin_turn()
+            if self.controller.start(speak=self.speak_replies.get(), mode=self.mode.get()):
+                self.notice.configure(text='')
+                self.update_controls(True)
+        return 'break'
 
-    def set_voice_state(self, state):
-        self.voice_state = state
-        labels = {
-            "Ready": "Ready — click Talk to record",
-            "Listening": "Listening — click Finish, or recording ends after the time limit",
-            "Transcribing": "Transcribing — first use may download the speech model",
-        }
-        self.status_label.config(text=labels.get(state, state + "…"))
-        self.send_button.config(state="normal" if state == "Ready" else "disabled")
-        self.talk_button.config(text="Finish" if state == "Listening" else "Talk",
-                               state="normal" if state in {"Ready", "Listening"} else "disabled")
-        self.stop_voice_button.config(state="normal" if state in {"Speaking", "Preparing voice"} else "disabled")
-        if state == "Speaking":
-            if self.talk_timer is None:
-                self.animate_speech()
-        else:
-            if self.talk_timer is not None:
-                self.root.after_cancel(self.talk_timer)
-                self.talk_timer = None
-            self.stop_talking()
-
-    def animate_speech(self):
-        self.talk_timer = None
-        if self.voice_state == "Speaking" and not self.closed:
-            self.is_talking = not self.is_talking
-            self.draw_face()
-            self.talk_timer = self.root.after(120, self.animate_speech)
+    def update_controls(self, busy):
+        self.send_button.configure(state='disabled' if busy else 'normal')
+        self.stop_button.configure(state='normal' if busy else 'disabled')
+        listening = self.voice_state == 'Listening'
+        for button in (self.talk_button, self.face_talk):
+            button.configure(text='Finish' if listening else 'Talk',
+                             state='normal' if listening or not busy else 'disabled')
 
     def poll_events(self):
         if self.closed:
             return
         try:
-            while True:
+            # process a bounded batch so heavy streaming cannot starve drawing
+            for _ in range(400):
                 kind, value = self.controller.events.get_nowait()
-                if kind == "state":
-                    self.set_voice_state(value)
-                elif kind == "heard":
-                    self.heard_label.config(text="You: " + value[:160])
-                elif kind == "reply":
-                    self.response_label.config(text="BMO: " + value)
-                    self.chat_count += 1
-                    if self.chat_count % self.CHATS_PER_EXPRESSION == 0:
-                        self.transition_expression(self.choose_new_expression())
-                        self.schedule_expression_change()
-                elif kind in {"error", "notice"}:
-                    self.error_label.config(text=value)
+                self.handle_event(kind, value)
         except Empty:
             pass
-        self.poll_timer = self.root.after(50, self.poll_events)
+        self.poll_timer = self.root.after(30, self.poll_events)
+
+    def handle_event(self, kind, value):
+        now = time.monotonic() - self.started
+        if kind == 'heard':
+            self.add_message('YOU', value)
+            self.reply_open = False
+            self.streaming_reply = ''
+        elif kind == 'token':
+            if not self.reply_open:
+                self.insert('BMO\n', 'role')
+                self.reply_start = self.transcript.index('end-1c')
+                self.reply_open = True
+            self.streaming_reply += value
+            self.insert(value)
+        elif kind == 'reply':
+            if not self.reply_open:
+                self.add_message('BMO', value)
+            else:
+                self.insert('\n\n')
+                self.format_code(self.reply_start, value)
+            self.reply_open = False
+            self.last_reply = value
+            self.trim_transcript()
+            if self.face_only.get():
+                self.view_button.configure(text='Chat •')
+        elif kind == 'state':
+            self.voice_state = value
+            self.renderer.motion.state = value
+            self.status.configure(text=value)
+            hints = {'Listening': 'I’m listening.', 'Thinking': 'Let me think.', 'Speaking': '',
+                     'Transcribing': 'One moment.', 'Ready': 'Here with you.',
+                     'Preparing voice': 'A moment for my voice.', 'Stopping': 'Stopping…'}
+            self.face_hint.configure(text=hints.get(value, value))
+            if value == 'Ready' and self.reply_open:
+                self.insert('\n\n')
+                self.reply_open = False
+            self.update_controls(value != 'Ready')
+        elif kind == 'audio':
+            self.renderer.motion.audio(value, now)
+        elif kind == 'input_level':
+            if self.voice_state == 'Listening':
+                bars = '●' * max(1, min(6, round(value * 6)))
+                self.face_hint.configure(text='Listening  ' + bars)
+        elif kind == 'expression':
+            self.renderer.motion.set_expression(value, now)
+        elif kind == 'mode':
+            self.renderer.motion.mode = value
+        elif kind in ('notice', 'error'):
+            if self.reply_open:
+                self.insert('\n\n')
+                self.reply_open = False
+            self.show_notice(value)
+        elif kind == 'metrics':
+            self.metrics = value
+
+    def format_code(self, start, text):
+        import re
+        for match in re.finditer(r'```[\s\S]*?(?:```|$)', text):
+            self.transcript.tag_add('code', f'{start}+{match.start()}c', f'{start}+{match.end()}c')
+
+    def copy_reply(self):
+        selection = ''
+        try:
+            selection = self.transcript.get('sel.first', 'sel.last')
+        except tk.TclError:
+            pass
+        text = selection or self.last_reply
+        if text:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.notice.configure(text='Copied.')
+
+    def export_chat(self):
+        filename = filedialog.asksaveasfilename(parent=self.root, defaultextension='.txt',
+                                                initialfile='bmo-conversation.txt', filetypes=[('Text', '*.txt')])
+        if filename:
+            try:
+                with open(filename, 'w', encoding='utf-8') as file:
+                    file.write(self.transcript.get('1.0', 'end-1c'))
+            except OSError as exc:
+                self.show_notice(str(exc))
+
+    def open_settings(self):
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.lift()
+            return
+        window = tk.Toplevel(self.root)
+        self.settings_window = window
+        window.title('BMO settings')
+        window.configure(bg=PANEL)
+        window.transient(self.root)
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        window.geometry(f'{min(430, sw-30)}x{min(550, sh-70)}')
+        canvas = tk.Canvas(window, bg=PANEL, highlightthickness=0)
+        scroll = ttk.Scrollbar(window, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side='right', fill='y')
+        canvas.pack(side='left', fill='both', expand=True)
+        body = tk.Frame(canvas, bg=PANEL, padx=18, pady=16)
+        item = canvas.create_window(0, 0, window=body, anchor='nw')
+        canvas.bind('<Configure>', lambda event: canvas.itemconfigure(item, width=event.width))
+        body.bind('<Configure>', lambda event: canvas.configure(scrollregion=canvas.bbox('all')))
+        tk.Label(body, text='Make yourself comfortable.', bg=PANEL, fg=INK,
+                 font=('DejaVu Sans', 13, 'bold')).pack(anchor='w', pady=(0, 12))
+        for label, variable in [('Speak replies', self.speak_replies), ('Reduced motion', self.reduced_motion)]:
+            tk.Checkbutton(body, text=label, variable=variable, bg=PANEL, fg=INK,
+                           command=self.preference_changed).pack(anchor='w')
+        self.button(body, 'Fullscreen / window   F11', self.toggle_fullscreen).pack(fill='x', pady=8)
+        tk.Label(body, text='Voice', bg=PANEL, fg=MUTED).pack(anchor='w', pady=(10, 3))
+        voice = self.config['voice']
+        backend = tk.StringVar(value=voice.get('backend', 'kokoro'))
+        ttk.Combobox(body, textvariable=backend, values=('kokoro', 'espeak'), state='readonly').pack(fill='x')
+        name = tk.StringVar(value=voice.get('kokoro_voice', 'af_sky'))
+        ttk.Combobox(body, textvariable=name, values=('af_sky', 'af_bella', 'af_heart'), state='readonly').pack(fill='x', pady=5)
+        speed = tk.DoubleVar(value=voice.get('kokoro_speed', .96))
+        pitch = tk.DoubleVar(value=voice.get('pitch_semitones', 0))
+        for label, variable, low, high, resolution in [('Pace', speed, .7, 1.3, .02), ('Pitch (needs ffmpeg)', pitch, -3, 4, .25)]:
+            tk.Scale(body, label=label, variable=variable, from_=low, to=high, resolution=resolution,
+                     orient='horizontal', bg=PANEL, fg=INK, highlightthickness=0).pack(fill='x')
+        def apply_voice():
+            if self.controller.busy:
+                self.show_notice('Finish the current reply before changing the voice.')
+                return
+            changes = dict(backend=backend.get(), kokoro_voice=name.get(), kokoro_speed=speed.get(), pitch_semitones=pitch.get())
+            try:
+                save_preferences('voice', changes)
+                self.config['voice'].update(changes)
+                self.controller.settings.update(changes)
+                self.controller.speaker.settings.update(changes)
+                self.notice.configure(text='Voice settings saved.')
+            except (OSError, ValueError) as exc:
+                self.show_notice(str(exc))
+        self.button(body, 'Apply voice', apply_voice, True).pack(fill='x', pady=8)
+        tk.Label(body, text='Kokoro is a natural local voice, not a clone of the show.\nAuto adapts tone; Focus keeps responses practical.\nCtrl+Space: talk / finish. Escape: stop or leave fullscreen.',
+                 wraplength=320, justify='left', bg=PANEL, fg=MUTED, font=('DejaVu Sans', 9)).pack(anchor='w', pady=10)
+        self.button(body, 'Export visible conversation', self.export_chat).pack(fill='x')
+        self.button(body, 'Close settings', window.destroy).pack(fill='x', pady=8)
+
+    def preference_changed(self):
+        if not self.speak_replies.get():
+            self.controller.stop_speaking()
+        self.persist()
 
     def close(self):
         if self.closed:
             return
         self.closed = True
         self.controller.close()
-        # cancel every tkinter timer, including idle motion and expression transitions
-        for timer in self.root.tk.call("after", "info"):
-            self.root.after_cancel(timer)
+        for timer in (self.draw_timer, self.poll_timer, self.layout_timer):
+            if timer is not None:
+                self.root.after_cancel(timer)
         self.root.destroy()
-
-    # ==================================================
-    # run
-    # ==================================================
 
     def run(self):
         self.root.mainloop()

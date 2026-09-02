@@ -1,21 +1,25 @@
 {
     "assistant_name": "BMO",
     "llm": {
-        "backend": "ollama",
-        "model": "qwen3.5:4b",
-        "url": "http://127.0.0.1:11434",
-        "timeout": 120,
-        "num_ctx": 4096,
-        "num_predict": 180
+        "backend": "ollama", "model": "qwen3.5:4b",
+        "url": "http://127.0.0.1:11434", "timeout": 120,
+        "num_ctx": 8192, "chat_tokens": 360, "focus_tokens": 1400,
+        "keep_alive": "10m"
     },
     "voice": {
-        "whisper_model": "base.en",
-        "language": "en",
-        "input_device": null,
-        "output_device": null,
-        "max_record_seconds": 30,
-        "espeak_voice": "en+f3",
-        "pitch": 65,
-        "speed": 155
+        "backend": "kokoro", "whisper_model": "base.en", "language": "en",
+        "input_device": null, "output_device": null,
+        "max_record_seconds": 30, "auto_finish": true,
+        "silence_seconds": 1.4, "speech_threshold": 0.012,
+        "kokoro_model": "models/kokoro/kokoro-v1.0.onnx",
+        "kokoro_voices": "models/kokoro/voices-v1.0.bin",
+        "kokoro_voice": "af_sky", "kokoro_speed": 0.96,
+        "pitch_semitones": 0.0, "volume": 0.85, "max_spoken_chars": 900,
+        "espeak_voice": "en+f3", "pitch": 65, "speed": 155
+    },
+    "ui": {
+        "mode": "auto", "fullscreen": false, "face_only": false,
+        "speak_replies": true, "reduced_motion": false, "fps": 40,
+        "font_size": 12
     }
 }
